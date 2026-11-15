@@ -1,0 +1,16 @@
+# Runtime dependencies for the Deadlock WPA overlay.
+# Install with:  python -m pip install -r requirements.txt
+
+numpy>=1.26
+Pillow>=10.2
+pystray>=0.19.5
+
+# Windows built-in OCR (Windows 10/11).  The split WinRT packages supply the
+# `winrt.windows.*` namespace used by live_screen_reader.py.
+winrt-runtime>=4.0; sys_platform == "win32"
+winrt-Windows-Foundation>=4.0; sys_platform == "win32"
+winrt-Windows-Foundation.Collections>=4.0; sys_platform == "win32"
+winrt-Windows-Graphics.Imaging>=4.0; sys_platform == "win32"
+winrt-Windows-Media.Ocr>=4.0; sys_platform == "win32"
+winrt-Windows-Storage>=4.0; sys_platform == "win32"
+winrt-Windows-Storage.Streams>=4.0; sys_platform == "win32"

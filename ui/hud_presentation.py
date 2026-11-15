@@ -1,0 +1,89 @@
+"""HUD presentation formatting: status badges, timers, and tray status."""
+
+import time
+from typing import Optional, Tuple
+from models import GameState, OverlayConfig
+
+
+def get_status_info(
+    state: GameState,
+    feedback: Optional[Tuple[str, str]] = None,
+) -> Tuple[str, str]:
+    """Return (title, dot_color) for the standby badge or feedback flash."""
+    if feedback:
+        return feedback[0], feedback[1]
+    if state.scan_status == "needs_match":
+        return "GAME FOUND: SET MATCH ID", "#e6bf83"
+    if state.scan_status == "connecting":
+        return "CONNECTING TO MATCH", "#91a5aa"
+    if state.scan_status == "needs_account":
+        return "CHECK ACCOUNT ID", "#e6bf83"
+    if state.scan_status == "unknown":
+        return "LIVE DATA UNAVAILABLE", "#91a5aa"
+    if state.scan_status == "error":
+        return "SCAN ERROR", "#ef4444"
+    if state.scan_status == "empty_pick_build":
+        return "SELECT BUILD", "#f59e0b"
+    if state.scan_status in ("empty", "empty_no_items"):
+        return "NO ITEMS STAND OUT", "#f59e0b"
+    if state.scan_status == "needs_hero":
+        return "PICK HERO (F6)", "#f59e0b"
+    if state.scan_status in ("scanning", "unresolved") or state.is_in_match:
+        return "SCANNING...", "#38bdf8"
+    return "WAITING FOR MATCH", "#22c55e"
+
+
+def format_timer_text(
+    state: GameState,
+    last_poll_time: float,
+    show_timer: bool = False,
+) -> str:
+    """Format the transient refresh age timer string."""
+    if not show_timer:
+        return ""
+    if state.source == "build_preview":
+        return "PREVIEW"
+    if not state.recommended_items:
+        return ""
+    age = max(0, int(time.time() - last_poll_time))
+    text = "NOW" if age < 3 else f"{age}s"
+    if state.detected_slots and state.matched_slots < state.detected_slots:
+        text += f" {state.matched_slots}/{state.detected_slots}"
+    return text
+
+
+def get_desired_content(
+    state: GameState,
+    config: OverlayConfig,
+    is_ingame: bool,
+    feedback: Optional[Tuple[str, str]] = None,
+    force_visible: bool = False,
+) -> Tuple[str, int]:
+    """Determine what view type ('items', 'status', 'feedback', 'hidden') to render.
+
+    ``force_visible`` means the user explicitly asked to see the overlay (F10,
+    tray → Show, Move), so an empty scan still renders a status badge instead
+    of parking the window offscreen and looking broken.
+    """
+    if feedback:
+        return ("feedback", 1)
+    items = state.recommended_items[: config.max_items]
+    if items:
+        return ("items", max(1, len(items)))
+    if state.scan_status in ("needs_match", "connecting", "needs_account"):
+        return ("status", 1)
+    if force_visible:
+        return ("status", 1)
+    if getattr(config, "standby_badge", True):
+        if config.only_in_game and not is_ingame:
+            return ("hidden", 0)
+        return ("status", 1)
+    return ("hidden", 0)
+
+
+def format_tray_text(state: GameState) -> str:
+    """Format tooltip text for the system tray icon."""
+    if state.recommended_items:
+        names = ", ".join(item.name for item in state.recommended_items[:3])
+        return f"Deadlock WPA - {len(state.recommended_items)} items: {names}"
+    return "Deadlock WPA - scan error" if state.scan_status == "error" else "Deadlock WPA - idle"
