@@ -1,6 +1,7 @@
 """Unit tests for Windows WinRT OCR engine initialization and synchronization."""
 
 import pytest
+import os
 from PIL import Image
 
 import ocr_engine
@@ -45,6 +46,7 @@ def test_ocr_image_async_empty_on_null_result():
     assert asyncio.run(ocr_image_async(tiny, None)) == ""
 
 
+@pytest.mark.skipif(bool(os.environ.get("CI")), reason="Native Windows OCR needs an interactive desktop; parser logic is tested with mocks")
 def test_get_ocr_engine_returns_engine_or_none(monkeypatch):
     if not _HAS_WINRT:
         assert get_ocr_engine() is None

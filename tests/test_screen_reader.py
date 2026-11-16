@@ -6,6 +6,7 @@ suite stays green on a machine without the optional ``winrt`` wheels installed.
 
 import numpy as np
 import pytest
+import os
 
 import live_screen_reader
 
@@ -169,6 +170,7 @@ def test_match_returns_none_for_short_text():
     assert match_catalog_item("XX", CATALOG) == (None, 0.0)
 
 
+@pytest.mark.skipif(bool(os.environ.get("CI")), reason="Native Windows OCR needs an interactive desktop; parser logic is tested with mocks")
 def test_engine_availability_is_reported_honestly():
     if not _HAS_WINRT:
         assert _get_ocr_engine() is None
@@ -179,6 +181,7 @@ def test_engine_availability_is_reported_honestly():
 
 
 @pytest.mark.skipif(not _HAS_WINRT, reason="winrt OCR not installed")
+@pytest.mark.skipif(bool(os.environ.get("CI")), reason="Native Windows OCR needs an interactive desktop; parser logic is tested with mocks")
 def test_engine_initialises_when_winrt_exists():
     engine = _get_ocr_engine()
     if engine is None:

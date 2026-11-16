@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import os
 
 import advisor_api
 import live_match
@@ -368,6 +369,7 @@ def test_idle_state_renders_no_cards(monkeypatch, tmp_path):
     assert counter_panel.visible_counters(state, config) == []
 
 
+@pytest.mark.skipif(bool(os.environ.get("CI")), reason="Native Windows OCR needs an interactive desktop; parser logic is tested with mocks")
 def test_generated_corner_stamp_can_be_read():
     from PIL import Image, ImageDraw, ImageFont
     import numpy as np

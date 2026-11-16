@@ -37,7 +37,8 @@ jobs:
       - name: Public source audit
         run: python public_guard.py
       - name: Tests
-        run: python -m pytest tests -q
+        timeout-minutes: 5
+        run: python -u -m pytest tests -v -o faulthandler_timeout=60
       - name: Build public archive
         run: python release_package.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
