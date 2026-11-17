@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.2.0 - 2026-11-17 (preview)
+
+- Full current-build board alongside the minimal five-item HUD.
+- Owned items, measured enemy threats and expanded validated item plans.
+- Better view settings and connection recovery/status details.
+- Discovery recovery when the public watch list is incomplete or stale.
+- Headless CI separates native desktop OCR integration from deterministic tests.
+
+
 ## 2.1.0 - 2026-11-15 (preview)
 
 - Stable item and counter queues with adjustable review cadence.

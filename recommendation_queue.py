@@ -71,6 +71,15 @@ class RecommendationQueue:
                     continue
                 remaining = [entry for entry in held if entry.item_id != weakest.item_id]
             proposal = choose(remaining + [outsider])
+            if due and outsider.item_id not in {entry.item_id for entry in proposal}:
+                # A category can be full even when the overall plan has gaps.
+                for weaker in sorted(held, key=priority):
+                    if priority(outsider) <= priority(weaker):
+                        continue
+                    attempt = choose([entry for entry in held if entry.item_id != weaker.item_id] + [outsider])
+                    if outsider.item_id in {entry.item_id for entry in attempt}:
+                        proposal = attempt
+                        break
             if outsider.item_id in {entry.item_id for entry in proposal}:
                 # A newly affordable alternative precedes savings-only targets.
                 proposal.sort(key=lambda entry: entry.affordable_now is True, reverse=True)

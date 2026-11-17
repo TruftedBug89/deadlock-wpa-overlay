@@ -34,48 +34,85 @@ class SettingsPanel:
     def _text(self, parent, text, muted=False, size=9):
         label = tk.Label(parent, text=text, font=(theme.FONT, size), bg=theme.BG,
                          fg=theme.MUTED if muted else theme.TEXT, anchor="w")
+        label.configure(wraplength=370)
         label.pack(anchor="w")
         return label
 
     def _build(self):
+        self.content = self.body
         self._text(self.body, "YOUR OVERLAY", muted=True, size=8)
-        self._text(self.body, "Quiet by default.", size=16)
+        self._text(self.body, "Make it yours.", size=16)
         self._text(self.body, "Changes save as you go.", muted=True)
-        if getattr(self.overlay.data_source, "is_advisor", False):
+        tabs = tk.Frame(self.body, bg=theme.BG)
+        tabs.pack(fill="x", pady=(14, 4))
+        self.tab_buttons = {}
+        choices = ["Display", "Match", "Behavior"] if getattr(
+            self.overlay.data_source, "is_advisor", False) else ["Display", "Behavior"]
+        for label in choices:
+            button = tk.Button(tabs, text=label, command=lambda name=label: self.select_tab(name),
+                               bg=theme.SURFACE, fg=theme.MUTED, relief="flat", bd=0,
+                               font=(theme.FONT, 10), padx=18, pady=8)
+            button.pack(side="left", padx=(0, 4))
+            self.tab_buttons[label] = button
+        self.body = tk.Frame(self.content, bg=theme.BG)
+        self.body.pack(fill="both", expand=True)
+        self.select_tab("Display", place=False)
+        footer = tk.Frame(self.content, bg=theme.BG)
+        footer.pack(fill="x", pady=(16, 0))
+        for label, action in [("Dock left", lambda: self.dock("top_left")),
+                              ("Dock right", lambda: self.dock("top_right")), ("Done", self.close)]:
+            tk.Button(footer, text=label, command=action, bg=theme.RAISED,
+                      fg=theme.ACCENT, activebackground=theme.BORDER, relief="flat", bd=0,
+                      padx=16, pady=7, font=(theme.FONT, 9)).pack(side="left", padx=(0, 8))
+
+    def select_tab(self, name, place=True):
+        for child in self.body.winfo_children():
+            child.destroy()
+        self.variables.clear()
+        self.connection_status = None
+        for label, button in self.tab_buttons.items():
+            button.configure(bg=theme.RAISED if name == label else theme.SURFACE,
+                             fg=theme.ACCENT if name == label else theme.MUTED)
+        if name == "Match":
             self._connection()
-        self._section("Layout")
-        self._choices("layout", [("Row", "horizontal"), ("Stack", "vertical")])
-        self._section("Recommendations")
+        elif name == "Behavior":
+            self._behavior()
+        else:
+            self._display()
+        self.canvas.yview_moveto(0)
+        if place:
+            self.window.update_idletasks()
+            self._place()
+
+    def _display(self):
+        if getattr(self.overlay.data_source, "is_advisor", False):
+            self._section("View")
+            self._choices("view_mode", [("Minimal queue", "minimal"), ("Full build", "full")])
+            self._text(self.body, "Full build shows item names, reasons, owned items and threats.", muted=True, size=8)
+        self._section("Queue cards / 1 to 5")
         self._choices("max_items", [(str(i), i) for i in range(1, 6)])
+        self._section("Minimal queue layout")
+        self._choices("layout", [("Row", "horizontal"), ("Stack", "vertical")])
+        self._toggle("icons_only", "Minimal view: compact icons only")
+        self._section("Size")
+        self._choices("hud_scale", [("S", .8), ("M", 1.), ("L", 1.25), ("XL", 1.5)])
+        self._section("Opacity")
+        self._choices("opacity", [("50%", .5), ("65%", .65), ("80%", .8), ("100%", 1.)])
+        self._toggle("show_counters", "Show matchup alternatives")
+        self._toggle("show_timer", "Minimal view: show freshness timer")
+
+    def _behavior(self):
         if getattr(self.overlay.data_source, "is_advisor", False):
             self._section("Queue review")
             self._choices("queue_seconds", [("2 min", 120.), ("2.5 min", 150.), ("3 min", 180.)])
-            self._text(self.body, "Bought or invalid items leave immediately.", muted=True, size=8)
-        self._section("Opacity")
-        self._choices("opacity", [("50%", .5), ("65%", .65), ("80%", .8), ("100%", 1.)])
-        self._section("Size")
-        self._choices("hud_scale", [("S", .8), ("M", 1.), ("L", 1.25), ("XL", 1.5)])
-        self._section("Details")
-        self._toggle("icons_only", "Compact icons only")
-        self._toggle("show_counters", "Show matchup counters")
-        self._toggle("show_timer", "Show freshness timer")
+            self._text(self.body, "Bought or invalid items leave on the next live update.", muted=True, size=8)
         self._section("Interaction")
         self._toggle("hover_controls", "Reveal controls on hover")
         self._toggle("clickthrough", "Pass clicks through when idle")
         self._toggle("only_when_focused", "Show only while playing")
-        self._text(self.body, "Hover briefly to drag. F9 also unlocks movement.", muted=True, size=8)
+        self._toggle("standby_badge", "Keep connection status visible")
+        self._text(self.body, "Hover to drag or scroll. F9 also unlocks movement.", muted=True, size=8)
         self._text(self.body, "Settings are always available in the tray.", muted=True, size=8)
-        footer = tk.Frame(self.body, bg=theme.BG)
-        footer.pack(fill="x", pady=(16, 0))
-        for label, action in [
-            ("Dock left", lambda: self.dock("top_left")),
-            ("Dock right", lambda: self.dock("top_right")),
-            ("Done", self.close),
-        ]:
-            tk.Button(footer, text=label, command=action, bg=theme.RAISED,
-                      fg=theme.ACCENT, activebackground=theme.BORDER,
-                      activeforeground=theme.TEXT, relief="flat", bd=0,
-                      padx=16, pady=7, font=(theme.FONT, 9), cursor="hand2").pack(side="left", padx=(0, 8))
 
     def _section(self, title):
         row = tk.Frame(self.body, bg=theme.BG)
@@ -97,10 +134,22 @@ class SettingsPanel:
             entry.insert(0, str(getattr(self.overlay.config, field) or ""))
             entry.pack(ipady=5)
             self.connection_fields[field] = entry
+        self._text(self.body, "Your account must appear in the API roster before advice is shown.", muted=True, size=8)
         self.connection_status = self._text(self.body, "", muted=True, size=8)
+        self.update_connection_status(self.overlay._current_state)
         tk.Button(self.body, text="Connect / retry", command=self.connect,
                   bg=theme.RAISED, fg=theme.ACCENT, relief="flat", bd=0,
                   padx=10, pady=4, font=(theme.FONT, 9)).pack(anchor="w")
+
+    def update_connection_status(self, state):
+        if getattr(self, "connection_status", None) is None:
+            return
+        if state.is_in_match and state.scan_status == "ok":
+            detail = f"Connected: {state.hero_name} / match {state.match_id}"
+        else:
+            from ui.hud_presentation import get_status_info
+            detail = state.last_error or get_status_info(state)[0]
+        self.connection_status.configure(text=detail)
 
     def connect(self):
         values = {}
@@ -113,6 +162,9 @@ class SettingsPanel:
         for field, value in values.items():
             setattr(self.overlay.config, field, value)
             setattr(self.overlay.data_source, field, value)
+        reset = getattr(self.overlay.data_source, "reset_connection", None)
+        if reset is not None:
+            reset()
         save_config(self.overlay.config)
         from models import GameState
         self.overlay._apply_new_state(GameState(source="advisor", scan_status="connecting"))
@@ -177,7 +229,7 @@ class SettingsPanel:
         layouts = get_monitor_layouts()
         index = monitor_for_rect((x, y, x + 1, y + 1), layouts)
         _, (left, top, right, bottom) = layouts[index]
-        body_width, body_height = self.body.winfo_reqwidth(), self.body.winfo_reqheight()
+        body_width, body_height = self.content.winfo_reqwidth(), self.content.winfo_reqheight()
         viewport = min(body_height, max(220, bottom - top - 90))
         self.canvas.configure(width=body_width, height=viewport,
                               scrollregion=(0, 0, body_width, body_height))

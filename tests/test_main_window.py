@@ -189,7 +189,8 @@ class TestOverlayWindow(unittest.TestCase):
         state = GameState(recommended_items=_items(5), source="live_screen", scan_status="ok")
         self.overlay._apply_new_state(state)
         self.overlay.config.x = 500
-        self.overlay._position_window()
+        with patch("ui.positioning.get_monitor_layouts", return_value=[((0, 0, 1920, 1080), (0, 0, 1920, 1040))]):
+            self.overlay._position_window()
         self.overlay.root.update_idletasks()
         geom = self.overlay.root.geometry()
         parts = geom.replace("+", "x").split("x")

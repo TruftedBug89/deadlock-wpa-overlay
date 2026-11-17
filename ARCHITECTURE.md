@@ -116,3 +116,8 @@ public_guard.py checks tracked paths before reading public text, reports no secr
 values, and enforces source size/typography. CI uses pinned dependencies/actions;
 tag releases publish only after tests and packaging pass. Local account settings,
 logs, caches, captures, recordings and assistant context never belong in Git.
+
+Full-build contracts are in models.py. advisor_build.py extends the minimal queue
+using current eligible items, reserving owned and queued slots/components.
+ui/full_build_view.py presents the scrollable plan; settings persist view_mode.
+Connection recovery and manual cache reset remain in advisor_live.py.

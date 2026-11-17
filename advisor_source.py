@@ -31,8 +31,9 @@ from advisor_api import (  # re-exported for callers and the lifecycle sim
     write_cache,
 )
 from advisor_live import AdvisorLiveMixin
+from advisor_build import AdvisorBuildMixin, BUILD_NOTE, threat_summary
 from item_inventory import component_graph, apply_inventory
-from advisor_evidence import prepare_candidates, select_threat, counter_picks
+from advisor_evidence import prepare_candidates, select_threat
 from item_economy import stage_for_souls, stage_target_cost
 from item_stats import (  # re-exported for tests and callers
     MIN_MATCHES,
@@ -44,16 +45,11 @@ from item_stats import (  # re-exported for tests and callers
 from match_context import MatchContext, build_context
 from models import CounterItem, GameState, WpaItem
 from recommendation_queue import RecommendationQueue
-from recommendation_engine import (
-    rank,
-    select_legal,
-)
 
 SLOT_MAP = {"weapon": "weapon", "vitality": "vitality", "spirit": "spirit", "tech": "spirit"}
-CONFIDENCE = {"high": 0.95, "medium": 0.75, "low": 0.5}
 
 
-class AdvisorDataSource(AdvisorLiveMixin):
+class AdvisorDataSource(AdvisorLiveMixin, AdvisorBuildMixin):
     """Same ``get_game_state`` contract as StatlockerDataSource."""
 
     is_advisor = True
@@ -103,6 +99,7 @@ class AdvisorDataSource(AdvisorLiveMixin):
         self.last_explanation: dict = {}
         self._item_queue = RecommendationQueue()
         self._counter_queue = RecommendationQueue()
+        self._plan_queue = RecommendationQueue()
 
     # ---------------------------------------------------------------- assets
     def _ensure_assets(self) -> bool:
@@ -224,52 +221,30 @@ class AdvisorDataSource(AdvisorLiveMixin):
     def latest_log_path(self):
         return None
 
-    def _to_wpa(self, scored) -> WpaItem:
-        return WpaItem(
-            name=scored.name,
-            category=scored.category,
-            cost=scored.cost,
-            tier=scored.tier,
-            image_url=scored.image_url,
-            class_name=scored.class_name,
-            confidence=CONFIDENCE.get(scored.confidence, 0.5),
-            can_buy=scored.affordable_now is True,
-            item_id=scored.item_id,
-            win_rate=scored.win_rate,
-            samples=scored.matches,
-            reason=" / ".join(scored.tags),
-        )
-
     def get_game_state(self, max_items: int = 5, queue_seconds: float = 150, **_kwargs) -> GameState:
         state = self._get_game_state(max_items, queue_seconds)
         if state.scan_status != "ok":
             self._item_queue.clear()
             self._counter_queue.clear()
+            self._plan_queue.clear()
         return state
 
     def _get_game_state(self, max_items: int, queue_seconds: float) -> GameState:
         started = time.time()
         self._requests = []
         self.last_explanation = {"status": "unknown"}
-        if not self._ensure_assets():
-            self.last_explanation = {"status": "error", "reason": self._assets_error or "catalog unavailable"}
-            return GameState(
-                scan_status="error",
-                source="advisor",
-                last_error=self._assets_error or "Item catalog unavailable",
-                generated_at=started,
-            )
         live = self._live_state()
         if live is None and self.require_match:
             status = getattr(self, "_live_status", "idle")
-            self.last_explanation = {"status": status, "reason": getattr(self, "_live_reason", "no confirmed live match")}
-            # No confirmed live match means no items: never leave stale builds up.
-            return GameState(
-                scan_status=status,
-                source="advisor",
-                is_in_match=False,
-                generated_at=started,
-            )
+            reason = getattr(self, "_live_reason", "no confirmed live match")
+            self.last_explanation = {"status": status, "reason": reason}
+            return GameState(scan_status=status, source="advisor", is_in_match=False,
+                             last_error=reason, generated_at=started)
+        if not self._ensure_assets():
+            reason = self._assets_error or "catalog unavailable"
+            self.last_explanation = {"status": "error", "reason": reason}
+            return GameState(scan_status="error", source="advisor", last_error=reason,
+                             generated_at=started)
         context = live["context"] if live else MatchContext()
         hero_id = (live or {}).get("hero_id") or self.manual_hero_id
         if hero_id is None:
@@ -297,41 +272,9 @@ class AdvisorDataSource(AdvisorLiveMixin):
             return GameState(hero_id=hero_id, hero_name=hero_name, scan_status="error",
                              source="advisor", last_error=type(err).__name__, generated_at=started)
         baseline = candidates[0].evidence["general_pool_baseline"] if candidates and basis != "mixed" else None
-        ranked = rank(
-            candidates,
-            stance=context.stance,
-            damage_share=context.damage_share,
-            target_cost=target_cost,
-            souls=souls,
-            bank=context.bank,
-            baseline=baseline,
-            limit=max(3, min(5, int(max_items))),
-            reserve_slots=not bool(live),
-            owned_ids=owned_ids,
-            owned_categories=self._owned_categories(),
-        )
-        owner = ((live or {}).get("match_id"), (live or {}).get("owner"), hero_id, stage_for_souls(souls))
-        fresh_ranked = ranked
-        if live:
-            ranked = self._item_queue.update(
-                ranked, owner=owner, limit=max(1, min(5, int(max_items))),
-                interval=queue_seconds, owned_ids=owned_ids, categories=self._owned_categories(),
-            )
-        wpa_items = [self._to_wpa(scored) for scored in ranked]
-        items = wpa_items[: max(1, min(5, int(max_items)))]
-        next_buy = next((item for item in wpa_items if item.can_buy), None) if live else None
-        queued_ids = {entry.item_id for entry in ranked}
-        build_ranked = select_legal(
-            ranked + [entry for entry in fresh_ranked if entry.item_id not in queued_ids],
-            3, owned_ids, self._owned_categories(),
-        )
-        build_choices = [self._to_wpa(entry) for entry in build_ranked] if live else []
-
-        counters = counter_picks(candidates, context, souls, owned_ids, self._owned_categories(),
-                                 [item.item_id for item in items], preview=not live,
-                                 queue=self._counter_queue if live else None, owner=owner,
-                                 interval=queue_seconds,
-                                 reserved_components={i for entry in ranked for i in entry.candidate.replaces_ids})
+        advice = self._make_advice(candidates, context, live, hero_id, souls, target_cost,
+                                   baseline, owned_ids, max_items, queue_seconds)
+        items, counters = advice.items, advice.counters
         if live and time.time() >= live["valid_until"]:
             self.last_explanation = {"status": "unknown", "reason": "snapshot expired during analytics refresh"}
             return GameState(source="advisor", scan_status="unknown", generated_at=started)
@@ -345,7 +288,12 @@ class AdvisorDataSource(AdvisorLiveMixin):
             "basis": basis,
             "baseline_win_rate": baseline,
             "context": context.to_dict(),
-            "items": [scored.to_dict() for scored in ranked],
+            "items": [scored.to_dict() for scored in advice.ranked],
+            "build_plan": [scored.to_dict() for scored in advice.plan],
+            "plan_queue": self._plan_queue.explanation if live else {"action": "preview"},
+            "build_note": BUILD_NOTE,
+            "threat_summary": threat_summary(context, self.hero_name),
+            "connection_source": (live or {}).get("connection_source", "unknown"),
             "candidate_evidence": audit,
             "queue": self._item_queue.explanation if live else {"action": "preview"},
             "counter_queue": self._counter_queue.explanation if live else {"action": "preview"},
@@ -360,6 +308,9 @@ class AdvisorDataSource(AdvisorLiveMixin):
             hero_id=hero_id,
             hero_name=hero_name,
             recommended_items=items,
+            build_plan=[self._to_wpa(entry) for entry in advice.plan],
+            threat_summary=threat_summary(context, self.hero_name),
+            build_note=BUILD_NOTE,
             detected_slots=len(items),
             matched_slots=len(items),
             counter_items=counters,
@@ -381,8 +332,8 @@ class AdvisorDataSource(AdvisorLiveMixin):
                 for item_id in owned_ids
                 if item_id in self._items and self._items[item_id].get("name")
             },
-            next_buy=next_buy,
-            build_candidates=build_choices,
+            next_buy=advice.next_buy,
+            build_candidates=advice.choices,
             is_in_match=bool(live) if self.require_match else True,
             source="advisor",
             scan_status="ok",

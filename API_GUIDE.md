@@ -235,3 +235,19 @@ Counter chips use the same mechanism over validated enemy evidence.
 The explanation includes queue and counter_queue: action, previous_ids,
 selected_ids, interval_seconds and seconds_until_review. The item details and
 claims remain from the newest snapshot. Queue timing never extends valid_until.
+
+## Full build and discovery recovery (2.2)
+
+Full mode extends the minimal queue with a separately stable, slot-legal tail
+up to twelve recommendations. All entries use current evidence and the same
+inventory, price, sample and freshness gates. Enemy soul and damage leaders
+are reported only when measured. Prices and affordability are per item.
+
+Automatic discovery considers the opt-in corner ID and public watch list,
+then a recently verified match. A stale automatic ID does not permanently block
+other candidates. Failed candidates back off for thirty seconds. Explicit retry
+clears connection caches; changing account identity also resets discovery.
+The corner reader uses the verified foreground game process and client bounds,
+without depending on its title or rendering an entire window. It stores no images.
+Settings show the current failure reason. Game detection alone never proves a
+broadcast is available, and real-game validation remains outstanding.

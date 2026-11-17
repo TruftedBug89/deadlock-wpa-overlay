@@ -14,7 +14,7 @@ matches and corner OCR may fail. Missing or stale data hides purchase advice.
 ## Install and connect
 
 1. Download the Windows x64 ZIP and SHA256SUMS.txt from a release. Extract the ZIP.
-2. Verify the ZIP hash with `Get-FileHash .\DeadlockWPAOverlay-2.1.0-windows-x64.zip -Algorithm SHA256`.
+2. Verify the ZIP hash with `Get-FileHash .\DeadlockWPAOverlay-2.2.0-windows-x64.zip -Algorithm SHA256`.
 3. Run DeadlockWPAOverlay.exe. The executable is unsigned and Windows may warn.
 4. Hover the HUD and click its gear, or choose **Overlay Settings** from the tray.
 5. Enter your numeric Steam account ID and click **Connect / retry**. Each friend
@@ -27,6 +27,18 @@ Your account must appear in the API roster before advice is shown. Deadlock
 running is not proof of an active broadcast. The public list covers only the
 watch tab's top 200 games. Minimized windows and unreadable stamps return unknown.
 Windows 10/11 x64 is required; corner OCR also needs a Windows OCR language installed.
+
+## Minimal HUD or full build
+
+Choose **Minimal** for up to five queued items, or **Full build** for a larger
+board with full item names, prices, measured WR, owned items and current threats.
+The build plan expands to at most twelve legal picks as your inventory and
+current-stage evidence allow. Empty positions are not filled with guesses.
+
+The full plan is a current-game plan, not a promised end-game build. SAVE targets
+remain clearly marked and affordability is per item, not a claim that the entire
+plan can be bought together. Enemy soul and damage leaders update from broadcasts;
+their measured counter evidence can change the plan at its next queue review.
 
 ## A steady queue
 
@@ -90,7 +102,8 @@ python -m venv .venv
 ```
 
 Replace ACCOUNT_ID with your numeric Steam account ID. Tests use synthetic match
-fixtures and mocked network/capture boundaries. Manual probes are skipped.
+fixtures and mocked network/capture boundaries. Manual probes are skipped. Headless CI also skips native Windows OCR integration
+checks; deterministic OCR parsing and discovery recovery still run with mocks.
 
 ```powershell
 .venv\Scripts\python.exe main.py --explain --preview-hero 1 --preview-souls 20000 --enemy-heroes 2,3
@@ -111,7 +124,7 @@ do not ship its heading template and that mode is not the supported default.
 .venv\Scripts\python.exe release_package.py
 ```
 
-Output: dist/releases/DeadlockWPAOverlay-2.1.0-windows-x64.zip plus SHA256SUMS.txt.
+Output: dist/releases/DeadlockWPAOverlay-2.2.0-windows-x64.zip plus SHA256SUMS.txt.
 The packager includes explicit public inputs only, never a portable configuration.
 Build dependencies are version-pinned. This does not promise bit-for-bit identical
 executables across different Windows/Python builds.

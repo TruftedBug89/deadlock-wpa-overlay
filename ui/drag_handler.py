@@ -24,7 +24,7 @@ class WindowDragHandler:
         hover = getattr(self.overlay, "_hover_controls", None)
         if self.overlay._is_locked and not (hover and hover.active):
             return
-        if getattr(getattr(event, "widget", None), "winfo_class", lambda: "")() in ("Button", "Checkbutton", "Radiobutton", "Scale"):
+        if getattr(getattr(event, "widget", None), "winfo_class", lambda: "")() in ("Button", "Checkbutton", "Radiobutton", "Scale", "Scrollbar", "TScrollbar", "Entry"):
             return
         self.active = True
         self.overlay.root.grab_set()

@@ -16,6 +16,8 @@ def _install_safe_streams() -> None:
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Deadlock WPA overlay")
+    parser.add_argument("--view", choices=["minimal", "full"], default=None,
+                        help="five-item queue or complete current-game build board")
     parser.add_argument("--layout", choices=["vertical", "horizontal"], default=None)
     parser.add_argument("--corner", choices=["top_left", "top_right", "bottom_left", "bottom_right"], default=None)
     parser.add_argument("--opacity", type=float, default=None, help="0.3 .. 1.0")
@@ -206,6 +208,8 @@ def main(argv=None) -> int:
     attach_to_default_desktop()
     config = load_config()
 
+    if args.view:
+        config.view_mode = args.view
     if args.layout:
         config.layout = args.layout
     if args.force_show:

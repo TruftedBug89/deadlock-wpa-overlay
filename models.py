@@ -159,6 +159,10 @@ class GameState:
     # Top three purchases for this stage, already filtered for ownership and
     # budget. The first one is the single next-buy call.
     build_candidates: List[WpaItem] = field(default_factory=list)
+    # A current-evidence expansion of the queue, never a guessed future build.
+    build_plan: List[WpaItem] = field(default_factory=list)
+    threat_summary: str = ""
+    build_note: str = ""
     owned_items: Set[str] = field(default_factory=set)
     recommended_items: List[WpaItem] = field(default_factory=list)
     # Ranked counter items for the enemy team, plus who they counter.
@@ -208,6 +212,7 @@ class OverlayConfig:
     only_in_game: bool = False
     only_when_focused: bool = False
     layout: str = "horizontal"  # "horizontal" ribbon | "vertical" stack
+    view_mode: str = "minimal"  # "minimal" queue | "full" current build plan
     refresh_seconds: float = 20.0  # background polling cadence
     queue_seconds: float = 150.0  # review one new suggestion every 2.5 minutes
     auto_refresh_seconds: float = 20.0  # legacy alias kept for old configs
@@ -329,6 +334,18 @@ class Scored:
             "affordable_now": self.affordable_now,
             "breakdown": {key: round(value, 3) for key, value in self.breakdown.items()},
         }
+
+
+@dataclass
+class BuildAdvice:
+    """Fresh scored evidence and its two views for one validated live snapshot."""
+
+    ranked: List[Scored] = field(default_factory=list)
+    plan: List[Scored] = field(default_factory=list)
+    items: List[WpaItem] = field(default_factory=list)
+    choices: List[WpaItem] = field(default_factory=list)
+    next_buy: Optional[WpaItem] = None
+    counters: List[CounterItem] = field(default_factory=list)
 
 
 @dataclass

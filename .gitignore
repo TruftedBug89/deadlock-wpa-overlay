@@ -91,3 +91,5 @@ AI_CONTEXT.md
 !/THIRD_PARTY_NOTICES.txt
 !/licenses/
 !/licenses/*.txt
+
+!/advisor_build.py

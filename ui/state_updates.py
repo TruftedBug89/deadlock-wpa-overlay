@@ -47,6 +47,8 @@ class StateUpdatesMixin:
     def _apply_new_state(self, state: GameState) -> None:
         if state.valid_until is not None and time.time() >= state.valid_until:
             state = GameState(source="advisor", scan_status="unknown")
+        if self._settings is not None:
+            self._settings.update_connection_status(state)
         previous = self._current_state
         self._current_state = state
         self._last_poll_time = time.time()
@@ -57,6 +59,9 @@ class StateUpdatesMixin:
                        it.samples, it.reason, it.can_buy) for it in s.recommended_items),
                 tuple((c.name, c.samples, c.gain, c.enemy_name) for c in s.counter_items),
                 tuple(s.enemy_heroes),
+                tuple((it.item_id, it.name, it.cost, it.win_rate, it.reason, it.can_buy)
+                      for it in s.build_plan),
+                tuple(sorted(s.owned_items)), s.threat_summary, s.build_note, s.last_error,
                 s.is_in_match,
                 s.source,
                 s.scan_status,

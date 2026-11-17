@@ -164,7 +164,7 @@ _ACTIVE_CACHE = {}
 
 
 def find_active_match(account_id: Optional[int]) -> Optional[int]:
-    """Public watch-list discovery; absence is unknown, never an OCR fallback."""
+    """Return a unique valid public watch-list match, or unknown."""
     if account_id is None:
         return None
     now = time.time()
@@ -172,7 +172,20 @@ def find_active_match(account_id: Optional[int]) -> Optional[int]:
     if cached and now - cached[0] < 30:
         return cached[1]
     rows = http_json(f"{API}/v1/matches/active?account_ids={int(account_id)}", timeout=8)
-    matches = {int(row["match_id"]) for row in rows if isinstance(row, dict) and row.get("match_id")}
+    matches = set()
+    for row in rows if isinstance(rows, list) else ():
+        try:
+            value = int(row.get("match_id")) if isinstance(row, dict) else 0
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            matches.add(value)
     match_id = next(iter(matches)) if len(matches) == 1 else None
     _ACTIVE_CACHE[int(account_id)] = (now, match_id)
     return match_id
+
+
+def clear_active_match_cache(account_id: Optional[int]) -> None:
+    """Explicit retry may bypass a cached discovery miss for this account."""
+    if account_id is not None:
+        _ACTIVE_CACHE.pop(int(account_id), None)

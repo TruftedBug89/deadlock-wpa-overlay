@@ -201,12 +201,15 @@ def fetch_live_snapshot(match_id: int, timeout_s: float = READ_TIMEOUT_S) -> Opt
     )
     players: Dict[int, LivePlayer] = {}
     ticks_seen: List[int] = []
-    started = time.time()
+    started = time.monotonic()
     try:
         with urllib.request.urlopen(request, timeout=timeout_s) as response:
             buffer: List[str] = []
             event = "message"
             for raw in response:
+                # Status and malformed events must not bypass the total deadline.
+                if time.monotonic() - started > timeout_s:
+                    break
                 line = raw.decode("utf-8", "replace").rstrip("\r\n")
                 if line.startswith("event:"):
                     event = line[6:].strip()
@@ -244,7 +247,7 @@ def fetch_live_snapshot(match_id: int, timeout_s: float = READ_TIMEOUT_S) -> Opt
                     players[entity] = player
                     if len(players) >= 12:
                         break
-                if time.time() - started > timeout_s:
+                if time.monotonic() - started > timeout_s:
                     break
     except Exception:
         return None
@@ -312,3 +315,10 @@ def strongest_enemy(snapshot: LiveSnapshot, account_id: Optional[int], hero_id: 
 
 def sum_souls(players: Sequence[LivePlayer]) -> int:
     return sum(player.souls for player in players)
+
+
+def clear_live_cache(match_id: int) -> None:
+    """Retry a broadcast now, retaining the replay watermark for safety."""
+    with _LOCK:
+        _CACHE.pop(int(match_id), None)
+        _MISSES.pop(int(match_id), None)

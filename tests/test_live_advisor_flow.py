@@ -189,7 +189,7 @@ def test_synthetic_match_stage_flip_and_full_reset(monkeypatch, tmp_path):
     screen["id"] = None
     calls_before = len(fetch_calls)
     gone = source.get_game_state()
-    assert gone.scan_status == "idle" and gone.recommended_items == []
+    assert gone.scan_status == "connecting" and gone.recommended_items == []
     assert len(fetch_calls) == calls_before
 
     # A different match id starts with a clean roster; nothing carries over.

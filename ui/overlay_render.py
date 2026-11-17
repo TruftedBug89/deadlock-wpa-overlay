@@ -37,6 +37,9 @@ class RenderMixin:
             self._refresh_drag_content()
             return
         kind, slots = self._desired_content()
+        if getattr(self.config, "view_mode", "minimal") == "full" and kind == "items":
+            self._render_full_build()
+            return
         same_shell = (
             kind == self._content_kind
             and slots == self._content_slots
@@ -104,8 +107,32 @@ class RenderMixin:
         self._position_window(metrics)
         self._update_visibility()
 
+    def _render_full_build(self):
+        from ui.full_build_view import FullBuildView, full_build_metrics
+        from ui.positioning import dock_bounds
+        _, work = dock_bounds(self)
+        metrics = full_build_metrics(self._scale, work)
+        if self._content_kind == "full_build" and isinstance(self._view, FullBuildView):
+            self._view.set_state(self._current_state)
+            self._position_window(metrics)
+            return
+        for child in self.container.winfo_children():
+            child.destroy()
+        self._content_kind, self._content_slots = "full_build", len(self._current_state.build_plan)
+        self._counter_view = None
+        self._view = FullBuildView(self.container, self._current_state, metrics,
+                                   self.config.max_items, self.config.show_counters)
+        self._view.pack(fill="both", expand=True)
+        self._position_window(metrics)
+        self._update_visibility()
+
     def _refresh_drag_content(self) -> None:
         """Refresh safety-sensitive content while leaving drag geometry alone."""
+        if self._content_kind == "full_build" and hasattr(self._view, "set_state"):
+            self._view.set_state(self._current_state)
+            if not self._current_state.recommended_items:
+                self._content_kind = None
+            return
         if self._view is None or not hasattr(self._view, "set_items"):
             return
         items = self._current_state.recommended_items[: self.config.max_items]

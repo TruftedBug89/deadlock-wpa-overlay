@@ -19,10 +19,11 @@ from PIL import Image, ImageOps
 
 from ocr_engine import _get_ocr_engine, run_ocr
 
-_MATCH_RE = re.compile(r"MATCH\s*[:\;]\s*([0-9OQ]{8,12})", re.IGNORECASE)
+_MATCH_RE = re.compile(r"MATCH(?:\s+ID)?\s*[:;#]\s*([0-9OQ](?:[0-9OQ ]{6,14})[0-9OQ])", re.IGNORECASE)
 _CACHE_LOCK = threading.Lock()
 _CACHE: dict = {"code": None, "at": 0.0}
 CACHE_TTL_S = 5.0
+_LAST_STATUS = "The corner match ID is not readable yet."
 
 
 class _BMIH(ctypes.Structure):
@@ -91,7 +92,7 @@ def parse_match_code(frame: np.ndarray) -> Optional[int]:
             text = " ".join(line.text for line in result.lines if line.text)
             found = _MATCH_RE.search(text)
             if found:
-                votes.append(found.group(1).upper().replace("O", "0").replace("Q", "0"))
+                votes.append(found.group(1).upper().replace(" ", "").replace("O", "0").replace("Q", "0"))
     if not votes:
         return None
     ranked = Counter(votes).most_common()
@@ -112,6 +113,7 @@ def _now() -> float:
 
 def get_match_id(max_age_s: float = CACHE_TTL_S) -> Optional[int]:
     """Cached match id from the screen; never raises."""
+    global _LAST_STATUS
     now = _now()
     with _CACHE_LOCK:
         if (_CACHE["code"] is not None or _CACHE["at"]) and now - _CACHE["at"] <= max_age_s:
@@ -119,8 +121,27 @@ def get_match_id(max_age_s: float = CACHE_TTL_S) -> Optional[int]:
     try:
         frame = capture_game_frame()
         code = parse_match_code(frame) if frame is not None else None
+        if code is not None:
+            _LAST_STATUS = "Corner match ID read; verifying the API roster."
+        elif frame is None:
+            from match_corner_capture import capture_status
+            _LAST_STATUS = capture_status()
+        elif _get_ocr_engine() is None:
+            _LAST_STATUS = "Windows OCR is unavailable; enter the match ID in settings."
+        else:
+            _LAST_STATUS = "Corner match ID unreadable; retrying automatically or enter it in settings."
     except Exception:
         code = None
+        _LAST_STATUS = "Corner reading failed; enter the match ID in settings."
     with _CACHE_LOCK:
         _CACHE["code"], _CACHE["at"] = code, _now()
     return code
+
+
+def clear_match_id_cache() -> None:
+    with _CACHE_LOCK:
+        _CACHE.update(code=None, at=0.0)
+
+
+def match_id_status() -> str:
+    return _LAST_STATUS
