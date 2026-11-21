@@ -161,14 +161,7 @@ class MinimalItemView(tk.Frame):
                 self._category_lines[index].config(bg=BG)
                 continue
             item = self.items[index]
-            photo = get_item_photo(
-                item.name,
-                image_url=item.image_url,
-                size=self.metrics.icon,
-                class_name=item.class_name,
-                category=item.category,
-                allow_download=False,
-            )
+            photo = get_item_photo(item.image_url, self.metrics.icon)
             if photo is not None:
                 self._photos.append(photo)
             outer.config(bg=theme.BORDER)
@@ -180,7 +173,7 @@ class MinimalItemView(tk.Frame):
                 if photo is not None:
                     icon_lbl.config(image=photo, bg=CARD_BG)
                 else:
-                    icon_lbl.config(image="", text="?", bg=CARD_BG)
+                    icon_lbl.config(image="", bg=CARD_BG)
                 name_lbl.config(text=item.display_name, bg=CARD_BG)
                 winrate = item.winrate_text
                 if winrate:

@@ -60,6 +60,8 @@ def update(overlay) -> None:
 
 def withdraw(overlay) -> None:
     """Park the window offscreen (much safer than withdrawing it)."""
+    if overlay._parked and overlay.root.winfo_x() <= _PARK_X:
+        return
     try:
         overlay.root.geometry(
             f"{overlay._metrics.width}x{overlay._metrics.height}+{_PARK_X}+{_PARK_Y}"

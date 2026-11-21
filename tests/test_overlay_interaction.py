@@ -102,6 +102,30 @@ def test_drag_release_without_press_never_moves_or_saves(overlay):
         save.assert_not_called()
 
 
+def test_retry_drops_advice_from_the_previous_poll(overlay):
+    old = GameState(source="advisor", scan_status="ok", recommended_items=[WpaItem("Old match")])
+    overlay._publish(old, overlay._connection_request)
+    overlay.config.account_id = 1001
+    overlay.config.match_id = 9001
+    overlay.request_connection()
+    first_request = overlay._connection_request
+    overlay.request_connection()  # Retrying the same IDs is still a new request.
+    overlay._publish(old, first_request)
+    overlay._drain_queue()
+    assert overlay._current_state.scan_status == "connecting"
+    assert not overlay._current_state.recommended_items
+
+    fresh = GameState(source="advisor", scan_status="ok", recommended_items=[WpaItem("New match")])
+    source = overlay.data_source
+    source.get_game_state = lambda **_: fresh
+    seen = []
+    source.reset_connection = lambda: seen.append((source.account_id, source.match_id))
+    overlay.poll_once()
+    overlay._drain_queue()
+    assert seen == [(1001, 9001)]
+    assert overlay._current_state is fresh
+
+
 def test_edge_resize_scales_without_saving_each_mouse_move(overlay):
     handler = overlay._resize_handler
     width = overlay.root.winfo_width()

@@ -2,9 +2,15 @@
 
 from dataclasses import replace
 
-from item_stats import MIN_MATCHES, bucket_floor, merge_buckets, observed_win_rate
+from item_stats import (
+    COUNTER_BOUND_Z, MIN_MATCHES, bucket_floor, bucket_window, merge_buckets,
+    observed_win_rate, wilson_bounds,
+)
 from models import CounterItem
-from recommendation_engine import COUNTER_MIN_GAIN, baseline_win_rate, build_candidate, rank
+from recommendation_engine import (
+    COUNTER_MIN_GAIN, baseline_win_rate, build_candidate, edge_reliability, rank,
+    score_candidate, supported_counter_gain,
+)
 
 
 def _catalog_rows(source, rows):
@@ -30,12 +36,20 @@ def _counts(row):
     return {key: row.get(key) for key in ("item_id", "wins", "matches", "bucket")}
 
 
-def counter_evidence(general, enemy, pool, enemy_ids, basis):
+def _pool_summary(rows):
+    usable = [row for row in rows if observed_win_rate(row) is not None]
+    return baseline_win_rate(usable), [_counts(row) for row in usable]
+
+
+def counter_evidence(general, enemy, pool, enemy_ids, basis, *, pool_summary=None):
     """Every gate uses the same cohort basis. No baseline means no claim."""
-    base = baseline_win_rate(pool)
+    base, pool_counts = _pool_summary(pool) if pool_summary is None else pool_summary
     general_rate = observed_win_rate(general) if general else None
     enemy_rate = observed_win_rate(enemy) if enemy else None
     gain = enemy_rate - general_rate if None not in (enemy_rate, general_rate) else None
+    general_upper = wilson_bounds(general_rate, int(general["matches"]))[1] if general_rate is not None else None
+    enemy_lower = wilson_bounds(enemy_rate, int(enemy["matches"]))[0] if enemy_rate is not None else None
+    supported = max(0.0, enemy_lower - max(base, general_upper)) if None not in (base, enemy_lower, general_upper) else 0.0
     reason = "accepted"
     if general_rate is None:
         reason = "general_sample_missing_or_thin"
@@ -45,67 +59,86 @@ def counter_evidence(general, enemy, pool, enemy_ids, basis):
         reason = "does_not_beat_enemy_pool"
     elif gain + 1e-12 < COUNTER_MIN_GAIN:
         reason = "gain_below_threshold"
-    valid_pool = [row for row in pool if observed_win_rate(row) is not None]
+    elif supported <= 0:
+        reason = "gain_within_sampling_uncertainty"
     return {
         "basis": basis, "enemy_hero_ids": list(enemy_ids),
         "filter_semantics": "any", "general": _counts(general), "enemy": _counts(enemy),
         "general_rate": general_rate, "enemy_rate": enemy_rate,
-        "enemy_pool": [_counts(row) for row in valid_pool],
+        "enemy_pool": pool_counts,
         "enemy_pool_baseline": base, "gain": gain,
+        "bound_z": COUNTER_BOUND_Z, "enemy_lower": enemy_lower,
+        "general_upper": general_upper, "supported_gain": supported,
         "minimum_matches": MIN_MATCHES, "minimum_gain": COUNTER_MIN_GAIN,
         "accepted": reason == "accepted", "decision": reason,
     }
 
 
-def prepare_candidates(source, hero_id, enemies, souls):
-    """Prefer three local buckets; thin pairs fall back together to overall."""
-    stage = f"bracket-{bucket_floor(souls)}" if souls else "overall"
-    general = _pool(source, hero_id, [], souls, bool(souls))
-    enemy_error = None
+def _optional_pool(source, hero_id, enemies, souls, bucket):
     try:
-        enemy = _pool(source, hero_id, enemies, souls, bool(souls)) if enemies else []
+        return _pool(source, hero_id, enemies, souls, bucket), None
     except Exception as err:
-        enemy, enemy_error = [], type(err).__name__
+        return [], type(err).__name__
+
+
+def prepare_candidates(source, hero_id, enemies, souls):
+    """Keep stage evidence for ranking; fall back only the comparable counter pair."""
+    floor = bucket_floor(souls)
+    stage = f"bracket-{floor}" if floor is not None else "overall"
+    has_stage = floor is not None
+    general, general_error = _optional_pool(source, hero_id, [], souls, has_stage)
+    overall, overall_error = _optional_pool(source, hero_id, [], souls, False) if has_stage else ([], None)
+    enemy, enemy_error = _optional_pool(source, hero_id, enemies, souls, has_stage) if enemies else ([], None)
+    overall_enemy, overall_enemy_error = (
+        _optional_pool(source, hero_id, enemies, souls, False) if has_stage and enemies else ([], None)
+    )
+    if not general and not overall and (general_error or overall_error):
+        raise RuntimeError(f"Item analytics unavailable ({general_error or overall_error})")
     general_map, enemy_map = _indexed(general), _indexed(enemy)
-    # Overall also covers items absent from the bracket response entirely.
-    needs_overall = bool(souls)
-    overall, overall_enemy = [], []
-    if needs_overall:
-        overall = _pool(source, hero_id, [], souls, False)
-        try:
-            overall_enemy = _pool(source, hero_id, enemies, souls, False) if enemies else []
-        except Exception as err:
-            enemy_error = type(err).__name__
     all_map, all_enemy_map = _indexed(overall), _indexed(overall_enemy)
+    ranking_pools = {stage: _pool_summary(general)}
+    matchup_pools = {stage: _pool_summary(enemy)}
+    if has_stage:
+        ranking_pools["overall"] = _pool_summary(overall)
+        matchup_pools["overall"] = _pool_summary(overall_enemy)
+    pool_matches = {basis: sum(int(row["matches"]) for row in counts)
+                    for basis, (_, counts) in ranking_pools.items()}
+    window = list(bucket_window(floor)) if has_stage else None
     candidates, audit = [], []
     for item_id in sorted(set(general_map) | set(all_map)):
-        row, vs = general_map.get(item_id), enemy_map.get(item_id)
-        pool, vs_pool, basis = general, enemy, stage
-        if needs_overall and (observed_win_rate(row or {}) is None
-                             or (enemies and observed_win_rate(vs or {}) is None)):
-            if (observed_win_rate(row or {}) is None or
-                    (observed_win_rate(all_map.get(item_id, {})) is not None and
-                     observed_win_rate(all_enemy_map.get(item_id, {})) is not None)):
-                row, vs = all_map.get(item_id), all_enemy_map.get(item_id)
-                pool, vs_pool, basis = overall, overall_enemy, "overall"
-        if row is None:
-            continue
-        evidence = counter_evidence(row, vs, vs_pool, enemies, basis)
-        evidence["item_id"] = item_id
-        evidence["name"] = source._meta(item_id)["name"]
-        evidence["general_pool_baseline"] = baseline_win_rate(pool)
-        evidence["general_pool"] = [_counts(r) for r in pool if observed_win_rate(r) is not None]
-        evidence["bucket_window"] = [max(0, bucket_floor(souls) - 5000), bucket_floor(souls) + 5000] if souls and basis != "overall" else None
-        evidence["enemy_error"] = enemy_error
+        local, vs = general_map.get(item_id), enemy_map.get(item_id)
+        all_row, all_vs = all_map.get(item_id), all_enemy_map.get(item_id)
+        ranking_basis = "overall" if has_stage and observed_win_rate(local or {}) is None else stage
+        row = all_row if has_stage and ranking_basis == "overall" else local
+        counter_basis = ranking_basis
+        if has_stage and enemies and observed_win_rate(vs or {}) is None:
+            if observed_win_rate(all_row or {}) is not None and observed_win_rate(all_vs or {}) is not None:
+                counter_basis = "overall"
+        use_overall = has_stage and counter_basis == "overall"
+        evidence = counter_evidence(all_row if use_overall else local, all_vs if use_overall else vs,
+                                    (), enemies, counter_basis, pool_summary=matchup_pools[counter_basis])
+        meta = source._meta(item_id)
+        baseline, counts = ranking_pools[ranking_basis]
+        valid_rate = observed_win_rate(row or {})
+        evidence.update(
+            item_id=item_id, name=meta["name"], ranking_basis=ranking_basis,
+            ranking_general=_counts(row), general_pool_baseline=baseline, general_pool=counts,
+            raw_edge=valid_rate - baseline if None not in (valid_rate, baseline) else None,
+            edge_reliability=edge_reliability(int(row["matches"])) if valid_rate is not None else None,
+            bucket_window=window if counter_basis != "overall" else None,
+            ranking_bucket_window=window if ranking_basis != "overall" else None,
+            counter_applied_to_rank=evidence["accepted"] and counter_basis == ranking_basis,
+            enemy_error=overall_enemy_error if use_overall else enemy_error,
+        )
         audit.append(evidence)
-        row = {**row, "_pool_matches": sum(r["matches"] for r in pool if observed_win_rate(r) is not None)}
+        if valid_rate is None:
+            continue
         label = source.hero_name(enemies[0]) if len(enemies) == 1 else "LINEUP"
-        candidate = build_candidate(source._meta(item_id), row, vs, label,
-                                    evidence["enemy_pool_baseline"])
+        candidate = build_candidate(meta, {**row, "_pool_matches": pool_matches[ranking_basis]}, counter_enemy=label)
         if candidate is not None:
             gain = evidence["gain"] if evidence["accepted"] else 0.0
             candidates.append(replace(candidate, counter_gain=gain, evidence=evidence))
-    bases = {c.evidence["basis"] for c in candidates}
+    bases = {c.evidence["ranking_basis"] for c in candidates}
     return candidates, audit, next(iter(bases)) if len(bases) == 1 else "mixed"
 
 
@@ -124,17 +157,17 @@ def select_threat(source, hero_id, enemies, context):
 
 
 def counter_picks(candidates, context, souls, owned_ids, categories, exclude_ids, preview=False,
-                  queue=None, owner=None, interval=150, reserved_components=()):
+                  queue=None, owner=None, interval=150, reserved_components=(), inventory_capacity=None):
     """Apply purchase gates before choosing the three strongest counter signals."""
     usable = [c for c in candidates if c.evidence.get("accepted") and c.item_id not in exclude_ids
               and not set(c.replaces_ids).intersection(reserved_components)]
     eligible = []
     for candidate in usable:
         ranked = rank([candidate], souls=souls, bank=context.bank,
-                      owned_ids=owned_ids, owned_categories=categories)
+                      owned_ids=owned_ids, owned_categories=categories, inventory_capacity=inventory_capacity)
         if ranked and (ranked[0].affordable_now is True or preview):
             eligible.append(candidate)
-    eligible.sort(key=lambda c: (c.counter_gain, c.evidence["enemy"]["matches"]), reverse=True)
+    eligible.sort(key=lambda c: (supported_counter_gain(c), c.evidence["enemy"]["matches"]), reverse=True)
     counts = {}
     for item_id in set(owned_ids) | set(exclude_ids):
         category = categories.get(item_id)
@@ -149,16 +182,14 @@ def counter_picks(candidates, context, souls, owned_ids, categories, exclude_ids
         if len(selected) == 3:
             break
     if queue is not None:
-        from dataclasses import replace
-        from recommendation_engine import score_candidate
-        pool = [replace(score_candidate(c, 0.5, bank=context.bank), score=c.counter_gain)
+        pool = [replace(score_candidate(c, 0.5, bank=context.bank), score=supported_counter_gain(c))
                 for c in eligible]
         selected = [entry.candidate for entry in queue.update(
             pool, owner=owner, limit=3, interval=interval,
             owned_ids=set(owned_ids) | set(exclude_ids), categories=categories,
         )]
     return [CounterItem(
-        name=c.name, item_id=c.item_id, category=c.category, score=c.counter_gain,
+        name=c.name, item_id=c.item_id, category=c.category, score=supported_counter_gain(c),
         samples=c.evidence["enemy"]["matches"],
         enemy_id=c.evidence["enemy_hero_ids"][0] if len(c.evidence["enemy_hero_ids"]) == 1 else None,
         enemy_name=c.counter_enemy, image_url=c.image_url, class_name=c.class_name,

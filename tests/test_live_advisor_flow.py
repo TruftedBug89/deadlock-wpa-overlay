@@ -116,7 +116,7 @@ def test_synthetic_match_stage_flip_and_full_reset(monkeypatch, tmp_path):
     phase = {"souls": 2500, "alive": True, "custom": None}
     fetch_calls = []
 
-    def fake_fetch(match_id):
+    def fake_fetch(match_id, **kwargs):
         fetch_calls.append(match_id)
         if not phase["alive"]:
             return None
@@ -256,7 +256,7 @@ def test_missing_ownership_vector_carries_forward_and_sale_is_honoured(monkeypat
     screen = {"id": match_id}
     phase = {"owned": "present", "alive": True, "souls": 2500}
 
-    def fake_fetch(probe_match_id):
+    def fake_fetch(probe_match_id, **kwargs):
         if not phase["alive"]:
             return None
         if phase["owned"] == "missing":

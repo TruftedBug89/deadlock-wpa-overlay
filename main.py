@@ -16,6 +16,9 @@ def _install_safe_streams() -> None:
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Deadlock WPA overlay")
+    parser.add_argument("--config", type=Path, help="use a specific local preferences file")
+    parser.add_argument("--health-file", type=Path,
+                        help="write an opt-in local playtest report without match or account IDs")
     parser.add_argument("--view", choices=["minimal", "full"], default=None,
                         help="five-item queue or complete current-game build board")
     parser.add_argument("--layout", choices=["vertical", "horizontal"], default=None)
@@ -206,7 +209,7 @@ def main(argv=None) -> int:
         return 0
 
     attach_to_default_desktop()
-    config = load_config()
+    config = load_config(path=args.config)
 
     if args.view:
         config.view_mode = args.view
@@ -244,7 +247,7 @@ def main(argv=None) -> int:
     elif args.corner and args.corner.startswith("bottom"):
         _left, _top, _right, bottom = get_screen_bounds()
         config.y = max(0, bottom - 140)
-    save_config(config)
+    save_config(config, path=args.config)
 
     enemy_override = _parse_hero_ids(args.enemy_heroes)
     if enemy_override:
@@ -289,6 +292,9 @@ def main(argv=None) -> int:
         enable_tray=not args.no_tray,
         enable_dpi=not args.no_dpi,
     )
+    if args.health_file:
+        from playtest_health import PlaytestHealth
+        overlay._playtest_health = PlaytestHealth(args.health_file)
 
     _left, _top, right, _bottom = get_monitor_bounds()
     print(f"Deadlock WPA Overlay {VERSION}")

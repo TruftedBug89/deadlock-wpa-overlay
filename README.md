@@ -14,10 +14,10 @@ matches and corner OCR may fail. Missing or stale data hides purchase advice.
 ## Install and connect
 
 1. Download the Windows x64 ZIP and SHA256SUMS.txt from a release. Extract the ZIP.
-2. Verify the ZIP hash with `Get-FileHash .\DeadlockWPAOverlay-2.2.0-windows-x64.zip -Algorithm SHA256`.
+2. Verify the ZIP hash with `Get-FileHash .\DeadlockWPAOverlay-2.4.0-windows-x64.zip -Algorithm SHA256`.
 3. Run DeadlockWPAOverlay.exe. The executable is unsigned and Windows may warn.
 4. Hover the HUD and click its gear, or choose **Overlay Settings** from the tray.
-5. Enter your numeric Steam account ID and click **Connect / retry**. Each friend
+5. Enter your numeric Steam account ID or SteamID64 and click **Connect / retry**. Each friend
    configures their own account; no account or personal settings ship in the build.
 6. Optionally enable **Read match ID from game corner**. When the public watch list
    misses your game, it reads only the corner match ID, in memory, at most once
@@ -30,8 +30,10 @@ Windows 10/11 x64 is required; corner OCR also needs a Windows OCR language inst
 
 ## Minimal HUD or full build
 
-Choose **Minimal** for up to five queued items, or **Full build** for a larger
-board with full item names, prices, measured WR, owned items and current threats.
+Use the hover switch or **Settings → Display** to choose **Minimal** for up to
+five picks or **Full build** for a scrollable board. **Plan** shows the next buy,
+the queue, build options and spendable souls. **Match** shows owned items,
+measured enemy threats and matchup alternatives.
 The build plan expands to at most twelve legal picks as your inventory and
 current-stage evidence allow. Empty positions are not filled with guesses.
 
@@ -39,6 +41,12 @@ The full plan is a current-game plan, not a promised end-game build. SAVE target
 remain clearly marked and affordability is per item, not a claim that the entire
 plan can be bought together. Enemy soul and damage leaders update from broadcasts;
 their measured counter evidence can change the plan at its next queue review.
+
+When your inventory is confirmed full, Full build can suggest one **Sell / Buy**
+pair. Both items need enough evidence from the same soul bracket, and both must
+share a category and activation type. The current wallet must cover the entire
+buy price. An affordable component upgrade takes priority. The board keeps your
+owned items visible when you have no safe purchase or swap.
 
 ## A steady queue
 
@@ -55,26 +63,31 @@ left to right. The order stays steady while the game is being checked.
   remain before savings targets. No forced rotation if the current picks still win.
 
 A SAVE label is a savings target, not a purchase you can make now. Four category
-slots, owned items and catalog upgrade components are checked on every scan.
+recommendations per category, live inventory capacity, owned items and catalog
+upgrade components are checked on every scan.
 Unknown inventory, bank balance or owned-item catalog data hides purchase advice.
 
 ## Evidence, without a wall of numbers
 
 Each card shows its name, measured historical WR and one short reason. Counter
 chips show measured gain against a comparable general sample. Both general and
-enemy samples require at least 100 observations. Counters must also beat the
-weighted enemy-pool baseline; a gain over a bad item baseline is insufficient.
+enemy samples require at least 100 observations. A counter's conservative win
+rate must exceed both the enemy pool baseline and the general row's upper bound.
 
 The picker uses team soul lead, damage share, fed enemies, your bank and inventory.
-It merges the three nearest net-worth buckets and falls back to overall data when
-samples are thin. Owned components can make an upgrade preferable; unverified
-upgrade discounts are never assumed. No handwritten matchup table or item-pair
-synergy endpoint is used. Historical associations cannot guarantee a good buy.
+It merges the three nearest net-worth buckets and uses overall evidence when a
+stage sample is thin. Larger samples carry more weight, and price fit uses the
+souls you can spend. Valid stage evidence stays in the main ranking when a
+matchup comparison falls back to overall data. Owned components can favor an
+upgrade. The historical data measures win rates among purchases and cannot
+isolate the effect of buying an item.
 
 API reads run in a background worker: normally every 20 seconds in a match,
 30 seconds while discovering, and 60 seconds with the game closed. Cards expire
-45 seconds after their snapshot if fresh data fails. Analytics cache for 6 hours;
-catalogs for 7 days. Queue review timing is separate from safety revalidation.
+45 seconds after their snapshot if fresh data fails. Analytics cover a recent
+seven-day window and cache for one hour. Catalogs cache for seven days and
+refresh when the public client version changes. Queue review timing is separate
+from safety revalidation. See the [tool comparison and API walkthrough](API_GUIDE.md).
 
 ## Controls
 
@@ -90,7 +103,9 @@ catalogs for 7 days. Queue review timing is separate from safety revalidation.
 
 Settings save locally. A small monitor gets a scrollable settings panel. There
 is no telemetry, automatic log upload, administrator requirement or startup service.
-Game artwork is fetched at runtime from catalog URLs and is not included in releases.
+Item art comes from Deadlock's shop images and is cached locally at runtime.
+If an image is unavailable, the item appears by name. Game art is downloaded
+on demand after installation.
 
 ## Develop and verify
 
@@ -124,7 +139,7 @@ do not ship its heading template and that mode is not the supported default.
 .venv\Scripts\python.exe release_package.py
 ```
 
-Output: dist/releases/DeadlockWPAOverlay-2.2.0-windows-x64.zip plus SHA256SUMS.txt.
+Output: dist/releases/DeadlockWPAOverlay-2.4.0-windows-x64.zip plus SHA256SUMS.txt.
 The packager includes explicit public inputs only, never a portable configuration.
 Build dependencies are version-pinned. This does not promise bit-for-bit identical
 executables across different Windows/Python builds.

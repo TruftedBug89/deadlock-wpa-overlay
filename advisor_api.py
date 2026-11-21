@@ -23,7 +23,10 @@ from typing import List, Optional, Sequence
 API = "https://api.deadlock-api.com"
 USER_AGENT = "DeadlockWPAOverlay/2.0 (advisor)"
 CACHE_TTL_ASSETS = 7 * 24 * 3600
-CACHE_TTL_STATS = 6 * 3600
+ASSETS_CACHE_FILE = "v2_assets.json"
+CACHE_TTL_STATS = 3600
+CLIENT_VERSION_TTL = 15 * 60
+ANALYTICS_DAYS = 7
 BUCKET_PARAM = "net_worth_by_5000"
 ASSETS_TIMEOUT = 60.0
 STATS_TIMEOUT = 30.0
@@ -88,10 +91,11 @@ def fetch_assets() -> dict:
             "item_slot_type": item.get("item_slot_type"),
             "item_tier": item.get("item_tier"),
             "cost": item.get("cost"),
-            "image": item.get("shop_image") or item.get("image"),
+            "image": item.get("shop_image"),
             "shopable": item.get("shopable"),
             "disabled": item.get("disabled"),
             "component_items": item.get("component_items") or [],
+            "is_active_item": item.get("is_active_item"),
         }
         for item in items
         if isinstance(item, dict)
@@ -104,11 +108,27 @@ def fetch_assets() -> dict:
     return {"items": trimmed, "heroes": roster}
 
 
+def fetch_client_version() -> Optional[int]:
+    """Version from the game's published steam.inf metadata."""
+    data = http_json(f"{API}/v1/assets/steam-info", timeout=4.0)
+    version = data.get("client_version") if isinstance(data, dict) else None
+    return version if type(version) is int and version > 0 else None
+
+
+def analytics_start(now: float) -> int:
+    """Stable UTC-day boundary for recent match samples and cache identity."""
+    day_seconds = 24 * 3600
+    return (int(now) // day_seconds - ANALYTICS_DAYS) * day_seconds
+
+
 def fetch_item_stats(
     hero_id: int,
     enemy_ids: Sequence[int] = (),
     bucket: bool = False,
     min_matches: int = 100,
+    *,
+    since: Optional[int] = None,
+    timeout: float = STATS_TIMEOUT,
 ) -> List[dict]:
     """Item win rates for a hero, optionally per net-worth bucket."""
     params = {"hero_id": int(hero_id), "min_matches": 1 if bucket else int(min_matches)}
@@ -116,17 +136,21 @@ def fetch_item_stats(
         params["enemy_hero_ids"] = ",".join(str(e) for e in sorted({int(e) for e in enemy_ids}))
     if bucket:
         params["bucket"] = BUCKET_PARAM
+    if since is not None:
+        params["min_unix_timestamp"] = int(since)
     url = f"{API}/v1/analytics/item-stats?{urllib.parse.urlencode(params)}"
-    rows = http_json(url, timeout=STATS_TIMEOUT)
+    rows = http_json(url, timeout=timeout)
     return rows if isinstance(rows, list) else []
 
 
-def fetch_matchups(hero_id: int, min_matches: int = 200) -> List[dict]:
+def fetch_matchups(hero_id: int, min_matches: int = 200, *, since: Optional[int] = None,
+                   timeout: float = STATS_TIMEOUT) -> List[dict]:
     """Matchup rows for one hero, reduced to enemy id, matches and win rate."""
-    rows = http_json(
-        f"{API}/v1/analytics/hero-counter-stats?min_matches={int(min_matches)}",
-        timeout=STATS_TIMEOUT,
-    )
+    params = {"min_matches": int(min_matches), "same_lane_filter": "false"}
+    if since is not None:
+        params["min_unix_timestamp"] = int(since)
+    url = f"{API}/v1/analytics/hero-counter-stats?{urllib.parse.urlencode(params)}"
+    rows = http_json(url, timeout=timeout)
     out: List[dict] = []
     for row in rows if isinstance(rows, list) else ():
         try:

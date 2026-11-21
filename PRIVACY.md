@@ -5,9 +5,15 @@ and live broadcasts. Requests include the configured account or match ID,
 hero IDs and query filters. Item artwork is fetched from catalog image URLs.
 The app has no telemetry or automatic diagnostic upload.
 
-Optional corner OCR reads only the match stamp from Deadlock's window, in memory.
+Optional corner OCR reads only the match-stamp crop of foreground Deadlock, in memory.
+If the game window provides blank pixels, the reader tries the same visible corner
+after checking foreground ownership and sampling the corner for obstructions.
 It does not supply items, souls, damage or inventory. It saves no images. OCR is
 off in a fresh install until enabled. Advice requires API roster verification.
+
+The opt-in `--health-file` playtest report contains local process and status
+information, snapshot freshness and item counts. It omits match IDs, player IDs,
+item names and raw OCR text.
 
 Account ID, preferences and window position live in overlay_config.json beside
 the executable when writable, or the user's local application-data folder.

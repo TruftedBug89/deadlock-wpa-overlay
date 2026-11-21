@@ -74,6 +74,45 @@ def test_thin_bracket_pair_falls_back_together(tmp_path):
     assert evidence["basis"] == "overall"
     assert evidence["general"]["wins"] == 500
     assert evidence["gain"] == pytest.approx(.05)
+    assert evidence["ranking_basis"] == "bracket-20000"
+    assert evidence["ranking_general"]["wins"] == 100
+    shown = next(item for item in advisor.last_explanation["items"] if item["item_id"] == 1)
+    assert shown["win_rate_pct"] == 10.0
+    assert evidence["accepted"] and not evidence["counter_applied_to_rank"]
+    assert shown["breakdown"]["counter"] == 0 and not any(tag.startswith("VS ") for tag in shown["tags"])
+
+
+def test_small_noisy_positive_counter_gain_is_uncertain():
+    enemy = row(1, 57, 100)
+    evidence = counter_evidence(row(1, 510), enemy, [enemy, row(2, 500)], [2], "overall")
+    assert evidence["gain"] == pytest.approx(.06)
+    assert evidence["enemy_rate"] > evidence["enemy_pool_baseline"]
+    assert evidence["decision"] == "gain_within_sampling_uncertainty"
+    assert evidence["supported_gain"] == 0
+
+
+def test_precise_gain_below_threshold_never_adds_counter_points(tmp_path):
+    def stats(hero, ids, bucket):
+        return [row(1, 5038000 if ids else 5000000, 10000000), row(2, 4800000, 10000000)]
+
+    advisor = source(tmp_path, stats)
+    advisor.get_game_state()
+    evidence = advisor.last_explanation["candidate_evidence"][0]
+    assert evidence["decision"] == "gain_below_threshold" and evidence["supported_gain"] > 0
+    shown = next(item for item in advisor.last_explanation["items"] if item["item_id"] == 1)
+    assert shown["breakdown"]["counter"] == 0
+
+
+def test_optional_overall_failure_keeps_stage_recommendations(tmp_path):
+    def stats(hero, ids, bucket):
+        if not bucket:
+            raise OSError("Unavailable")
+        return [row(1, 550), row(2, 450)]
+
+    advisor = source(tmp_path, stats)
+    state = advisor.get_game_state()
+    assert state.recommended_items
+    assert advisor.last_explanation["candidate_evidence"][0]["ranking_basis"] == "bracket-20000"
 
 
 def test_missing_overall_enemy_data_cannot_make_a_counter(tmp_path):

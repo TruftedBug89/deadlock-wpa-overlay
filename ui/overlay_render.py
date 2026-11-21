@@ -130,7 +130,7 @@ class RenderMixin:
         """Refresh safety-sensitive content while leaving drag geometry alone."""
         if self._content_kind == "full_build" and hasattr(self._view, "set_state"):
             self._view.set_state(self._current_state)
-            if not self._current_state.recommended_items:
+            if self._desired_content()[0] != "items":
                 self._content_kind = None
             return
         if self._view is None or not hasattr(self._view, "set_items"):

@@ -5,6 +5,18 @@ from typing import Optional, Tuple
 from models import GameState, OverlayConfig
 
 
+def inventory_status(state: GameState) -> str:
+    """Describe blocked capacity only for a current, confirmed inventory."""
+    if not state.is_in_match or not state.match_id or state.scan_status != "ok":
+        return ""
+    capacity = getattr(state, "inventory_capacity", None)
+    if capacity is not None and capacity > 0 and state.known_owned_items >= capacity:
+        return "Inventory full"
+    if capacity is None and state.known_owned_items >= 9:
+        return "Available slots unknown"
+    return ""
+
+
 def get_status_info(
     state: GameState,
     feedback: Optional[Tuple[str, str]] = None,
@@ -13,9 +25,12 @@ def get_status_info(
     if feedback:
         return feedback[0], feedback[1]
     if state.scan_status == "needs_match":
-        return "GAME FOUND: SET MATCH ID", "#e6bf83"
+        return "FINDING MATCH AUTOMATICALLY", "#e6bf83"
     if state.scan_status == "connecting":
-        return "CONNECTING TO MATCH", "#91a5aa"
+        title = "WAITING FOR LIVE DATA" if state.last_error else "CONNECTING TO MATCH"
+        return title, "#91a5aa"
+    if state.scan_status == "broadcast_unavailable":
+        return "BROADCAST UNAVAILABLE / AUTO RETRY", "#e6bf83"
     if state.scan_status == "needs_account":
         return "CHECK ACCOUNT ID", "#e6bf83"
     if state.scan_status == "unknown":
@@ -28,6 +43,12 @@ def get_status_info(
         return "NO ITEMS STAND OUT", "#f59e0b"
     if state.scan_status == "needs_hero":
         return "PICK HERO (F6)", "#f59e0b"
+    if getattr(state, "replacement", None) is not None and not state.recommended_items:
+        return "SWAP OPTION / OPEN FULL BUILD", "#88d5ba"
+    if not state.recommended_items and inventory_status(state):
+        return inventory_status(state).upper(), "#91a5aa"
+    if state.scan_status == "ok" and state.is_in_match and not state.recommended_items:
+        return "NO VALID PURCHASES", "#91a5aa"
     if state.scan_status in ("scanning", "unresolved") or state.is_in_match:
         return "SCANNING...", "#38bdf8"
     return "WAITING FOR MATCH", "#22c55e"
@@ -70,7 +91,13 @@ def get_desired_content(
     items = state.recommended_items[: config.max_items]
     if items:
         return ("items", max(1, len(items)))
-    if state.scan_status in ("needs_match", "connecting", "needs_account"):
+    if getattr(state, "replacement", None) is not None:
+        return ("items", 1) if config.view_mode == "full" else ("status", 1)
+    if inventory_status(state):
+        return ("items", 1) if config.view_mode == "full" else ("status", 1)
+    if state.scan_status in ("needs_match", "connecting", "needs_account", "broadcast_unavailable"):
+        return ("status", 1)
+    if state.source == "advisor" and is_ingame and state.scan_status in ("unknown", "error", "ok"):
         return ("status", 1)
     if force_visible:
         return ("status", 1)

@@ -34,6 +34,34 @@ def test_corner_candidate_beats_stale_public_id(monkeypatch):
     assert calls == [9002]
 
 
+def test_only_verified_players_own_team_flex_sets_capacity(monkeypatch):
+    game = snapshot(9001)
+    game.team_flex_slots = {2: 2, 3: 3}
+    advisor = source(monkeypatch, active=9001, fetcher=lambda _: game)
+    assert advisor._live_state()["context"].inventory_capacity == 11
+    game.team_flex_slots.pop(2)
+    assert advisor._live_state()["context"].inventory_capacity is None
+
+
+def test_extra_lookup_runs_only_for_verified_nine_to_eleven_owned_items(monkeypatch):
+    import live_flex
+
+    calls = []
+    game = snapshot(9001)
+    monkeypatch.setattr(live_match, "get_live_snapshot", lambda _: game)
+    monkeypatch.setattr(live_flex, "TeamFlexProbe", lambda: SimpleNamespace(
+        value_or_schedule=lambda *args: calls.append(args[:3]) or 2))
+    advisor = source(monkeypatch, active=9001)
+    advisor._on_capacity_ready = lambda: None
+    game.players[0].owned_item_ids = list(range(10, 18))
+    assert advisor._live_state()["context"].inventory_capacity is None
+    game.players[0].owned_item_ids.append(18)
+    assert advisor._live_state()["context"].inventory_capacity == 11
+    game.players[0].owned_item_ids.extend([19, 20, 21])
+    assert advisor._live_state()["context"].inventory_capacity is None
+    assert calls == [(9001, 2, 100)]
+
+
 def test_public_candidate_still_works_after_bad_corner(monkeypatch):
     advisor = source(monkeypatch, active=9001, corner=9002,
                      fetcher=lambda match: snapshot(match) if match == 9001 else None)
@@ -47,6 +75,37 @@ def test_verified_broadcast_survives_watch_list_disappearance(monkeypatch):
     state = advisor._live_state()
     assert state["match_id"] == 9001
     assert state["connection_source"] == "verified_previous"
+
+
+def test_unverified_corner_candidate_survives_one_missing_read(monkeypatch):
+    now, calls = [10], []
+    monkeypatch.setattr(advisor_live.time, "monotonic", lambda: now[0])
+    advisor = source(monkeypatch, corner=9002, fetcher=lambda match: calls.append(match))
+    assert advisor._live_state() is None
+    monkeypatch.setattr(match_code_reader, "get_match_id", lambda **_: None)
+    now[0] += 31
+    assert advisor._live_state() is None
+    assert calls == [9002, 9002]
+    assert advisor._live_status == "connecting"
+    now[0] += 181
+    assert advisor._live_state() is None
+    assert calls == [9002, 9002]
+    assert advisor._live_status == "needs_match"
+
+
+def test_failed_relay_stays_in_unavailable_state_while_retrying(monkeypatch):
+    now = [10]
+    monkeypatch.setattr(advisor_live.time, "monotonic", lambda: now[0])
+    advisor = source(monkeypatch, corner=9002)
+    monkeypatch.setattr(live_match, "get_live_snapshot", lambda match: None)
+    monkeypatch.setattr(live_match, "last_broadcast_read", lambda: ("relay_error", 502))
+    assert advisor._live_state() is None
+    assert advisor._live_status == "broadcast_unavailable"
+    assert advisor._candidate_failures[9002] == 70
+    assert "could not start" in advisor._live_reason
+    now[0] = 42
+    assert advisor._live_state() is None
+    assert advisor._live_status == "broadcast_unavailable"
 
 
 def test_account_change_forgets_confirmed_match(monkeypatch):
@@ -104,3 +163,23 @@ def test_sse_status_events_cannot_bypass_total_deadline(monkeypatch):
     monkeypatch.setattr(live_match.urllib.request, "urlopen", lambda *a, **kw: response)
     assert live_match.fetch_live_snapshot(9001, timeout_s=3) is None
     assert next(clock) < 10
+
+
+def test_visible_corner_uses_client_coordinates_and_skips_obstruction(monkeypatch):
+    import match_corner_capture as capture
+
+    def translate(_hwnd, output):
+        point = ctypes.cast(output, ctypes.POINTER(wintypes.POINT)).contents
+        point.x += 2200
+        point.y += 50
+        return True
+
+    copies = []
+    win = SimpleNamespace(GetForegroundWindow=lambda: 42, ClientToScreen=translate,
+                          WindowFromPoint=lambda point: 42, GetAncestor=lambda hwnd, _: hwnd)
+    monkeypatch.setattr(capture, "_copy_crop", lambda *args: copies.append(args[2:]) or "frame")
+    assert capture._visible_corner(win, None, 42, 1700, 1000, 220, 80) == "frame"
+    assert copies == [(None, 3900, 1050, 220, 80)]
+    win.WindowFromPoint = lambda point: 90 if point.x > 4050 else 42
+    assert capture._visible_corner(win, None, 42, 1700, 1000, 220, 80) is None
+    assert len(copies) == 1

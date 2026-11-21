@@ -3,6 +3,17 @@
 from dataclasses import replace
 
 
+BASE_INVENTORY_CAPACITY = 9
+MAX_INVENTORY_CAPACITY = 12
+
+
+def confirmed_capacity(capacity, held):
+    """Use a verified unlock total, or infer fullness only at the absolute cap."""
+    if type(capacity) is int and max(BASE_INVENTORY_CAPACITY, held) <= capacity <= MAX_INVENTORY_CAPACITY:
+        return capacity
+    return MAX_INVENTORY_CAPACITY if held == MAX_INVENTORY_CAPACITY else None
+
+
 def component_graph(items):
     """Resolve public catalog component class names to current shop IDs."""
     by_class = {item.get("class_name"): item_id for item_id, item in items.items()
@@ -35,6 +46,7 @@ def apply_inventory(candidates, owned_ids, graph):
         replaces = tuple(i for i in components if i in owned)
         evidence = {**candidate.evidence, "owned_components": list(replaces),
                     "catalog_components": list(components),
+                    "catalog_ancestors": sorted(ancestors(candidate.item_id, graph)),
                     "price_basis": "catalog cost, no estimated discount"}
         result.append(replace(candidate, replaces_ids=replaces, evidence=evidence))
     return result

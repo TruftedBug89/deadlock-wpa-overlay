@@ -22,6 +22,13 @@ class HoverControls:
         self.grip = tk.Label(self.bar, text="\u283f", font=("Segoe UI Symbol", 12),
                              bg=theme.RAISED, fg=theme.MUTED, cursor="fleur", padx=8)
         self.grip.pack(side="left")
+        if getattr(overlay.data_source, "is_advisor", False):
+            self.view_button = tk.Button(self.bar, text="Full build", font=(theme.FONT, 8),
+                                         bg=theme.RAISED, fg=theme.TEXT, bd=0, padx=5,
+                                         cursor="hand2", command=self.switch_view)
+            self.view_button.pack(side="left")
+        else:
+            self.view_button = None
         self.settings_button = tk.Button(
             self.bar, text="\u2699", font=("Segoe UI Symbol", 11), bg=theme.RAISED,
             fg=theme.ACCENT, activebackground=theme.BORDER, activeforeground=theme.TEXT,
@@ -36,6 +43,15 @@ class HoverControls:
             edge.bind("<ButtonRelease-1>", overlay._resize_handler.stop)
             self.edges.append(edge)
         self.job = overlay.root.after(80, self.poll)
+
+    def switch_view(self):
+        self.overlay.toggle_view()
+        self._update_view_label()
+
+    def _update_view_label(self):
+        if self.view_button is not None:
+            text = "Minimal" if self.overlay.config.view_mode == "full" else "Full build"
+            self.view_button.configure(text=text)
 
     def poll(self):
         if self.closed or self.overlay._stop_event.is_set():
@@ -80,9 +96,11 @@ class HoverControls:
                 self.set_active(False)
 
     def set_active(self, active):
-        changed = self.active != active
+        if self.active == active:
+            return
         self.active = active
         if active:
+            self._update_view_label()
             self.bar.place(relx=1, x=-3, y=3, anchor="ne")
             self.bar.lift()
             for index, edge in enumerate(self.edges):
@@ -92,8 +110,7 @@ class HoverControls:
             self.bar.place_forget()
             for edge in self.edges:
                 edge.place_forget()
-        if changed:
-            self.sync_clickthrough()
+        self.sync_clickthrough()
 
     def sync_clickthrough(self):
         if self.overlay._hwnd:

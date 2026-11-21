@@ -14,6 +14,18 @@ from typing import Optional
 _LOCK = threading.Lock()
 _CACHE: dict = {"id": None, "at": None}
 DISCOVERY_TTL_S = 60.0
+STEAM64_BASE = 76561197960265728
+
+
+def normalize_account_id(value) -> Optional[int]:
+    """Accept a Steam account ID or the equivalent individual SteamID64."""
+    digits = str(value).strip()
+    if not digits.isascii() or not digits.isdecimal() or len(digits) > 20:
+        return None
+    number = int(digits)
+    if number >= STEAM64_BASE:
+        number -= STEAM64_BASE
+    return number if 0 < number < 2**32 else None
 
 
 def _running_game_directory() -> Optional[Path]:

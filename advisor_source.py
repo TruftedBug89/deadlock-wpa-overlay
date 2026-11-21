@@ -15,16 +15,22 @@ Everything is cached under ``%LOCALAPPDATA%\\DeadlockWPAOverlay\\advisor``.
 """
 
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Dict, List, Mapping, Optional, Sequence
 
 from advisor_api import (  # re-exported for callers and the lifecycle sim
     API,
+    ASSETS_CACHE_FILE,
     BUCKET_PARAM,
     CACHE_TTL_ASSETS,
     CACHE_TTL_STATS,
+    CLIENT_VERSION_TTL,
+    STATS_TIMEOUT,
+    analytics_start,
     cache_dir,
     fetch_assets,
+    fetch_client_version,
     fetch_item_stats,
     fetch_matchups,
     read_cache,
@@ -32,7 +38,8 @@ from advisor_api import (  # re-exported for callers and the lifecycle sim
 )
 from advisor_live import AdvisorLiveMixin
 from advisor_build import AdvisorBuildMixin, BUILD_NOTE, threat_summary
-from item_inventory import component_graph, apply_inventory
+from item_inventory import apply_inventory, component_graph, confirmed_capacity
+from local_account import normalize_account_id
 from advisor_evidence import prepare_candidates, select_threat
 from item_economy import stage_for_souls, stage_target_cost
 from item_stats import (  # re-exported for tests and callers
@@ -70,12 +77,13 @@ class AdvisorDataSource(AdvisorLiveMixin, AdvisorBuildMixin):
         read_match_id: bool = False,
         live_fetcher: Optional[Callable] = None,
         preview_souls: Optional[int] = None,
+        version_fetcher: Optional[Callable] = None,
     ):
         self.manual_hero_id = int(hero_id) if hero_id else None
         self.manual_enemy_heroes: List[int] = [int(e) for e in (enemy_ids or [])]
         self.preview_souls = int(preview_souls) if preview_souls else 0
         self.match_id = int(match_id) if match_id else None
-        self.account_id = int(account_id) if account_id else None
+        self.account_id = normalize_account_id(account_id)
         self.require_match = bool(require_match)
         self.read_match_id = bool(read_match_id)
         self._live_fetcher = live_fetcher
@@ -87,12 +95,19 @@ class AdvisorDataSource(AdvisorLiveMixin, AdvisorBuildMixin):
         self._assets_fetcher = assets_fetcher or fetch_assets
         self._stats_fetcher = stats_fetcher or fetch_item_stats
         self._matchup_fetcher = matchup_fetcher or fetch_matchups
+        self._version_fetcher = version_fetcher or (fetch_client_version if assets_fetcher is None else None)
+        self._client_version = None
+        self._version_checked_at = None
+        self._assets_version = None
+        self._analytics_since = None
+        self._live_analytics_until = None
         self._cache = Path(cache_path) if cache_path else cache_dir()
         self._items: Dict[int, dict] = {}
         self._heroes: Dict[int, str] = {}
         self._assets_error: Optional[str] = None
         self._loaded = False
         self._assets_loaded_at = 0.0
+        self._components = {}
         self._requests = []
         self._stats_errors = {}
         # Populated by every successful scan; ``--explain`` prints it verbatim.
@@ -102,20 +117,37 @@ class AdvisorDataSource(AdvisorLiveMixin, AdvisorBuildMixin):
         self._plan_queue = RecommendationQueue()
 
     # ---------------------------------------------------------------- assets
+    def _check_client_version(self, now):
+        if self._version_fetcher is None:
+            return
+        if self._version_checked_at is not None and now - self._version_checked_at < CLIENT_VERSION_TTL:
+            return
+        self._version_checked_at = now
+        try:
+            version = self._version_fetcher()
+        except Exception:
+            return
+        if type(version) is int and version > 0:
+            self._client_version = version
+
     def _ensure_assets(self) -> bool:
-        if self._loaded and time.time() - self._assets_loaded_at < CACHE_TTL_ASSETS:
+        now = time.time()
+        self._check_client_version(now)
+        version = self._client_version
+        if (self._loaded and now - self._assets_loaded_at < CACHE_TTL_ASSETS
+                and (version is None or self._assets_version == version)):
             return bool(self._items)
         self._items.clear()
         self._heroes.clear()
         self._loaded = False
-        payload = read_cache(self._cache / "assets.json", CACHE_TTL_ASSETS)
-        if (payload is not None and self._assets_fetcher is fetch_assets
-                and any("component_items" not in i for i in payload.get("items", []))):
+        path = self._cache / ASSETS_CACHE_FILE
+        payload = read_cache(path, CACHE_TTL_ASSETS)
+        if not isinstance(payload, dict) or (version is not None and payload.get("client_version") != version):
             payload = None
         if payload is None:
             try:
-                payload = self._assets_fetcher()
-                write_cache(self._cache / "assets.json", payload)
+                payload = {**self._assets_fetcher(), "client_version": version}
+                write_cache(path, payload)
             except Exception as err:
                 self._assets_error = f"assets unavailable: {type(err).__name__}"
                 return False
@@ -130,7 +162,8 @@ class AdvisorDataSource(AdvisorLiveMixin, AdvisorBuildMixin):
         for hero in payload.get("heroes") or ():
             self._heroes[int(hero["id"])] = str(hero["name"])
         self._loaded = True
-        path = self._cache / "assets.json"
+        self._assets_version = payload.get("client_version")
+        self._components = component_graph(self._items)
         self._assets_loaded_at = path.stat().st_mtime if path.exists() else time.time()
         return bool(self._items)
 
@@ -151,6 +184,7 @@ class AdvisorDataSource(AdvisorLiveMixin, AdvisorBuildMixin):
             "item_tier": item.get("item_tier"),
             "image": item.get("image"),
             "class_name": item.get("class_name"),
+            "is_active_item": item.get("is_active_item"),
         }
 
     def _owned_categories(self) -> Dict[int, str]:
@@ -170,44 +204,76 @@ class AdvisorDataSource(AdvisorLiveMixin, AdvisorBuildMixin):
             hero_id,
             "-".join(str(e) for e in enemy_ids) or "all",
         )
-        key = "v3_" + key
-        cached = read_cache(self._cache / key, CACHE_TTL_STATS)
+        key = "v4_" + key
+        scope = self._analytics_scope()
+        cached = self._cached_rows(key, scope)
         request = {"endpoint": "/v1/analytics/item-stats", "hero_id": hero_id,
                    "enemy_hero_ids": list(enemy_ids), "bucket": BUCKET_PARAM if bucket else None,
-                   "min_matches": 1 if bucket else MIN_MATCHES, "cached": cached is not None}
+                   "min_matches": 1 if bucket else MIN_MATCHES, "cached": cached is not None, **scope}
         self._requests.append(request)
         if cached is not None:
             request["fetched_at"] = (self._cache / key).stat().st_mtime
             return cached
-        if time.time() < self._stats_errors.get(key, 0):
+        retry_key = key, self._analytics_since, self._assets_version
+        if time.time() < self._stats_errors.get(retry_key, 0):
             raise RuntimeError("Analytics unavailable during retry delay")
         try:
-            try:
-                rows = self._stats_fetcher(hero_id, list(enemy_ids), bucket)
-            except TypeError:
-                # Injected fetchers keep the two-argument contract.
-                rows = self._stats_fetcher(hero_id, list(enemy_ids))
+            rows = self._fetch_rank_rows(hero_id, enemy_ids, bucket)
         except Exception:
-            self._stats_errors[key] = time.time() + 60
+            self._stats_errors[retry_key] = time.time() + 60
             raise
         request["fetched_at"] = time.time()
         if isinstance(rows, list):
-            write_cache(self._cache / key, rows)
+            write_cache(self._cache / key, {**scope, "rows": rows})
         return rows if isinstance(rows, list) else []
 
+    def _analytics_scope(self):
+        return {"min_unix_timestamp": self._analytics_since, "client_version": self._assets_version}
+
+    def _analytics_timeout(self, cap):
+        if self._live_analytics_until is None:
+            return STATS_TIMEOUT
+        remaining = self._live_analytics_until - time.time() - 2.0
+        if remaining <= 1:
+            raise TimeoutError("Live snapshot has insufficient time for analytics")
+        return min(cap, remaining)
+
+    def _cached_rows(self, key, scope):
+        payload = read_cache(self._cache / key, CACHE_TTL_STATS)
+        if isinstance(payload, dict) and all(payload.get(field) == value for field, value in scope.items()):
+            rows = payload.get("rows")
+            if isinstance(rows, list):
+                return rows
+        return None
+
+    def _fetch_rank_rows(self, hero_id, enemy_ids, bucket):
+        if self._stats_fetcher is fetch_item_stats:
+            timeout = self._analytics_timeout(8.0 if enemy_ids else 18.0)
+            return self._stats_fetcher(hero_id, enemy_ids, bucket, since=self._analytics_since, timeout=timeout)
+        try:
+            return self._stats_fetcher(hero_id, list(enemy_ids), bucket)
+        except TypeError:
+            return self._stats_fetcher(hero_id, list(enemy_ids))
+
     def _matchups(self, hero_id: int) -> List[dict]:
-        cached = read_cache(self._cache / f"matchups_hero{hero_id}.json", CACHE_TTL_STATS)
+        filename = f"v2_matchups_hero{hero_id}.json"
+        scope = self._analytics_scope()
+        cached = self._cached_rows(filename, scope)
         if cached is not None:
             return cached
-        key = f"matchups_{hero_id}"
+        key = filename, self._analytics_since, self._assets_version
         if time.time() < self._stats_errors.get(key, 0):
             return []
         try:
-            rows = self._matchup_fetcher(hero_id)
+            if self._matchup_fetcher is fetch_matchups:
+                rows = self._matchup_fetcher(hero_id, since=self._analytics_since, timeout=self._analytics_timeout(4.0))
+            else:
+                rows = self._matchup_fetcher(hero_id)
         except Exception:
             self._stats_errors[key] = time.time() + 60
             return []
-        write_cache(self._cache / f"matchups_hero{hero_id}.json", rows)
+        if isinstance(rows, list):
+            write_cache(self._cache / filename, {**scope, "rows": rows})
         return rows if isinstance(rows, list) else []
 
     # ---------------------------------------------------------------- state
@@ -221,8 +287,15 @@ class AdvisorDataSource(AdvisorLiveMixin, AdvisorBuildMixin):
     def latest_log_path(self):
         return None
 
-    def get_game_state(self, max_items: int = 5, queue_seconds: float = 150, **_kwargs) -> GameState:
-        state = self._get_game_state(max_items, queue_seconds)
+    def get_game_state(self, max_items: int = 5, queue_seconds: float = 150,
+                       on_broadcast_start=None, on_capacity_ready=None, **_kwargs) -> GameState:
+        self._on_broadcast_start = on_broadcast_start
+        self._on_capacity_ready = on_capacity_ready
+        try:
+            state = self._get_game_state(max_items, queue_seconds)
+        finally:
+            self._on_broadcast_start = None
+            self._on_capacity_ready = None
         if state.scan_status != "ok":
             self._item_queue.clear()
             self._counter_queue.clear()
@@ -231,9 +304,12 @@ class AdvisorDataSource(AdvisorLiveMixin, AdvisorBuildMixin):
 
     def _get_game_state(self, max_items: int, queue_seconds: float) -> GameState:
         started = time.time()
+        self._analytics_since = analytics_start(started)
+        self._stats_errors = {key: retry for key, retry in self._stats_errors.items() if retry > started}
         self._requests = []
         self.last_explanation = {"status": "unknown"}
         live = self._live_state()
+        self._live_analytics_until = live["valid_until"] if live else None
         if live is None and self.require_match:
             status = getattr(self, "_live_status", "idle")
             reason = getattr(self, "_live_reason", "no confirmed live match")
@@ -262,17 +338,18 @@ class AdvisorDataSource(AdvisorLiveMixin, AdvisorBuildMixin):
             self.last_explanation = {"status": "unknown", "reason": "live budget, inventory, catalog ownership or souls unknown",
                                      "context": context.to_dict()}
             return GameState(hero_id=hero_id, hero_name=hero_name, is_in_match=True,
-                             source="advisor", scan_status="unknown", generated_at=started)
+                             source="advisor", scan_status="unknown", generated_at=started,
+                             last_error="Waiting for current souls, wallet and inventory data.")
         targets, strongest, strongest_rate = select_threat(self, hero_id, enemies, context) if enemies else ([], "", None)
         try:
-            candidates, audit, basis = prepare_candidates(self, hero_id, targets, souls)
-            candidates = apply_inventory(candidates, owned_ids, component_graph(self._items))
+            measured, audit, basis = prepare_candidates(self, hero_id, targets, souls)
+            candidates = apply_inventory(measured, owned_ids, self._components)
         except Exception as err:
             self.last_explanation = {"status": "error", "reason": type(err).__name__}
             return GameState(hero_id=hero_id, hero_name=hero_name, scan_status="error",
                              source="advisor", last_error=type(err).__name__, generated_at=started)
         baseline = candidates[0].evidence["general_pool_baseline"] if candidates and basis != "mixed" else None
-        advice = self._make_advice(candidates, context, live, hero_id, souls, target_cost,
+        advice = self._make_advice(candidates, measured, context, live, hero_id, souls, target_cost,
                                    baseline, owned_ids, max_items, queue_seconds)
         items, counters = advice.items, advice.counters
         if live and time.time() >= live["valid_until"]:
@@ -282,6 +359,7 @@ class AdvisorDataSource(AdvisorLiveMixin, AdvisorBuildMixin):
             "status": "ok",
             "source": "deadlock-api.com",
             "assets_fetched_at": self._assets_loaded_at,
+            "analytics_scope": self._analytics_scope(),
             "live_tick": live["tick"] if live else None,
             "valid_until": live["valid_until"] if live else None,
             "hero": {"id": hero_id, "name": hero_name},
@@ -290,6 +368,7 @@ class AdvisorDataSource(AdvisorLiveMixin, AdvisorBuildMixin):
             "context": context.to_dict(),
             "items": [scored.to_dict() for scored in advice.ranked],
             "build_plan": [scored.to_dict() for scored in advice.plan],
+            "inventory_replacement": asdict(advice.replacement) if advice.replacement is not None else None,
             "plan_queue": self._plan_queue.explanation if live else {"action": "preview"},
             "build_note": BUILD_NOTE,
             "threat_summary": threat_summary(context, self.hero_name),
@@ -309,6 +388,8 @@ class AdvisorDataSource(AdvisorLiveMixin, AdvisorBuildMixin):
             hero_name=hero_name,
             recommended_items=items,
             build_plan=[self._to_wpa(entry) for entry in advice.plan],
+            replacement=advice.replacement,
+            inventory_capacity=confirmed_capacity(context.inventory_capacity, len(owned_ids)) if live else None,
             threat_summary=threat_summary(context, self.hero_name),
             build_note=BUILD_NOTE,
             detected_slots=len(items),

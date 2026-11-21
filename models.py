@@ -144,6 +144,27 @@ class CounterItem:
         return label or clean[:10]
 
 
+@dataclass(frozen=True)
+class ItemReplacement:
+    """One affordable, evidence-backed change to a confirmed full inventory."""
+
+    sell_id: int
+    sell_name: str
+    buy: WpaItem
+    held_win_rate: float
+    buy_win_rate: float
+    supported_gap: float
+    basis: str
+    sell_matches: int
+    buy_matches: int
+    slots_used: int
+    slot_limit: int
+    held_upper: float
+    buy_lower: float
+    pool_baseline: float
+    minimum_supported_gap: float
+
+
 @dataclass
 class GameState:
     """Snapshot of the match and the live Statlocker recommendation row."""
@@ -161,6 +182,8 @@ class GameState:
     build_candidates: List[WpaItem] = field(default_factory=list)
     # A current-evidence expansion of the queue, never a guessed future build.
     build_plan: List[WpaItem] = field(default_factory=list)
+    replacement: Optional[ItemReplacement] = None
+    inventory_capacity: Optional[int] = None
     threat_summary: str = ""
     build_note: str = ""
     owned_items: Set[str] = field(default_factory=set)
@@ -261,7 +284,6 @@ class Candidate:
     counter_gain: float = 0.0
     counter_enemy: str = ""
     replaces_ids: Tuple[int, ...] = ()
-    ranking_rate: Optional[float] = None
     evidence: dict = field(default_factory=dict)
 
     @property
@@ -345,6 +367,7 @@ class BuildAdvice:
     items: List[WpaItem] = field(default_factory=list)
     choices: List[WpaItem] = field(default_factory=list)
     next_buy: Optional[WpaItem] = None
+    replacement: Optional[ItemReplacement] = None
     counters: List[CounterItem] = field(default_factory=list)
 
 
@@ -382,6 +405,7 @@ class MatchContext:
     enemy_damage_hero_id: Optional[int] = None
     owned_item_ids: Tuple[int, ...] = ()
     ownership_known: bool = False
+    inventory_capacity: Optional[int] = None
     target_cost: int = 0
 
     @property
@@ -409,6 +433,7 @@ class MatchContext:
             "enemy_damage_hero_id": self.enemy_damage_hero_id,
             "owned_item_ids": list(self.owned_item_ids),
             "ownership_known": self.ownership_known,
+            "inventory_capacity": self.inventory_capacity,
             "buy_budget": self.buy_budget,
             "target_cost": self.target_cost,
         }

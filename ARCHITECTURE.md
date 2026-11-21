@@ -43,13 +43,16 @@ advisor_api.py -> advisor_source.py -> advisor_evidence.py
 | --- | --- |
 | `advisor_api.py` | Public HTTP requests, expiry, atomic JSON caching, retry delays and active-match discovery |
 | `advisor_live.py` | Confirm live identity, freshness and inventory; optional match-ID-only corner OCR; no companion reads |
-| `live_match.py` | Parse SSE fields, require complete ticks, cache snapshots, handle termination and replayed ticks |
+| `live_match.py` | Parse SSE roster and optional team slot rows, cache snapshots, handle termination, schema fallback and replayed ticks |
 | `match_context.py` | Compute live lead, damage share, leaders, bank and ownership knowledge |
-| `item_stats.py` | Validate counts, pool adjacent buckets, measured/smoothed rates and weighted baselines |
+| `item_stats.py` | Validate counts, pool adjacent buckets, calculate measured rates, Wilson bounds and weighted baselines |
 | `advisor_evidence.py` | Align cohorts, apply counter gates, retain evidence and rejected claims |
 | `recommendation_engine.py` | Five score terms, purchase/slot gates and deterministic sorting |
 | `advisor_source.py` | Refresh catalog/analytics, combine evidence and context, build state and explanation |
 | `item_economy.py` | Explicit stage and comfortable-price policy |
+| `item_inventory.py` | Resolve actual component chains and confirmed slot capacity |
+| `inventory_replacement.py` | Compare held and affordable items with same-bracket evidence and choose at most one optional sale |
+| `icon_loader.py` | Fetch and cache official shop art by catalog URL for Tk |
 | `ui/minimal_view.py` | Main item, measured WR and one reason |
 | `ui/counter_view.py` | Counter gain chips |
 | `ui/counter_panel.py` | Counter visibility and enemy-filter label |
@@ -119,5 +122,6 @@ logs, caches, captures, recordings and assistant context never belong in Git.
 
 Full-build contracts are in models.py. advisor_build.py extends the minimal queue
 using current eligible items, reserving owned and queued slots/components.
-ui/full_build_view.py presents the scrollable plan; settings persist view_mode.
+ui/full_build_view.py presents the scrollable plan, build inventory and optional
+sale. Settings persist view_mode.
 Connection recovery and manual cache reset remain in advisor_live.py.

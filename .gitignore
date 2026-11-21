@@ -32,8 +32,10 @@
 !/item_categories.py
 !/item_economy.py
 !/item_inventory.py
+!/inventory_replacement.py
 !/item_stats.py
 !/live_match.py
+!/live_flex.py
 !/live_screen_reader.py
 !/local_account.py
 !/log_tracker.py
@@ -93,3 +95,4 @@ AI_CONTEXT.md
 !/licenses/*.txt
 
 !/advisor_build.py
+!/playtest_health.py

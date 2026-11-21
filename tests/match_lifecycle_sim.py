@@ -106,14 +106,25 @@ def _snapshot(match_id, hero_id, souls, enemy_id, fetched_at):
     )
 
 
-def _skills(hero_id, _enemies):
-    """General rows; filtered rows carry a real counter edge on item 111."""
+def _skills(hero_id, _enemies, bucket=False):
+    """Stage-specific winners and a well-supported counter on item 111."""
     rows = [dict(row) for row in STATS[hero_id]]
     if _enemies:
         for row in rows:
             if row["item_id"] == 111:
-                row["wins"] = int(row["wins"]) + 50  # +1.0 pp: evidence without dominating the main pick
-    return rows
+                row["wins"] += 150
+    if not bucket:
+        return rows
+    bracketed = []
+    for floor in range(0, 30000, 5000):
+        for row in rows:
+            wins = row["wins"]
+            if row["item_id"] == 103 and floor in (10000, 15000):
+                wins += 200
+            if row["item_id"] == 104 and floor >= 15000:
+                wins += 350
+            bracketed.append({**row, "bucket": floor, "wins": wins})
+    return bracketed
 
 
 def _matchups(hero_id):
@@ -138,7 +149,7 @@ def run(verbose=False):
     screen = {"id": MATCH_A}
     phase = {"match": MATCH_A, "hero": HERO_A, "souls": 2500, "enemy": HERO_B, "alive": True}
 
-    def fake_fetch(match_id):
+    def fake_fetch(match_id, **kwargs):
         if not phase["alive"]:
             return None
         return _snapshot(match_id, phase["hero"], phase["souls"], phase["enemy"], clock.value)

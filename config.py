@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from models import OverlayConfig
+from local_account import normalize_account_id
 
 _ACTIVE_PATH: Optional[Path] = None
 
@@ -49,9 +50,12 @@ def _first(data: Dict[str, Any], field: str, default: Any) -> Any:
 
 def _to_int(value: Any, default: int) -> int:
     try:
-        return int(float(value))
-    except (TypeError, ValueError):
-        return default
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError, OverflowError):
+            return default
 
 
 def _to_float(value: Any, default: float) -> float:
@@ -129,7 +133,7 @@ def _from_dict(data: Dict[str, Any]) -> OverlayConfig:
         source=source,
         hero_id=hero_id,
         read_match_id=_to_bool(data.get("read_match_id"), False),
-        account_id=_to_int(data.get("account_id"), 0) or None,
+        account_id=normalize_account_id(data.get("account_id")),
         match_id=_to_int(data.get("match_id"), 0) or None,
         enemy_hero_ids=enemy_hero_ids,
         icons_only=icons_only,

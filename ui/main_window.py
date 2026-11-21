@@ -90,7 +90,10 @@ class OverlayWindow(RenderMixin, StateUpdatesMixin):
         self._preview_event = threading.Event()
         self._preview_clear_event = threading.Event()
         self._preview_token = 0
-        self._queue: "queue.Queue[GameState]" = queue.Queue(maxsize=4)
+        self._queue = queue.Queue(maxsize=4)
+        self._connection_request = None
+        self._worker_connection = None
+        self._icon_refresh = threading.Event()
         self._worker: Optional[threading.Thread] = None
         self._settings = None
         self._hover_controls = None
@@ -306,6 +309,14 @@ class OverlayWindow(RenderMixin, StateUpdatesMixin):
         if feedback:
             self.show_feedback(f"SIZE {int(round(value * 100))}%", theme.ACCENT)
 
+    def toggle_view(self) -> None:
+        if not getattr(self.data_source, "is_advisor", False):
+            return
+        self.config.view_mode = "minimal" if self.config.view_mode == "full" else "full"
+        save_config(self.config)
+        self._content_kind = None
+        self._render_content()
+
     def open_settings(self) -> None:
         if self._settings is not None:
             self._settings.window.lift()
@@ -313,6 +324,11 @@ class OverlayWindow(RenderMixin, StateUpdatesMixin):
             return
         from ui.overlay_settings import SettingsPanel
         self._settings = SettingsPanel(self)
+        if self._current_state.scan_status in (
+            "needs_match", "needs_account", "connecting", "unknown", "broadcast_unavailable"
+        ):
+            if "Match" in self._settings.tab_buttons:
+                self._settings.select_tab("Match")
 
     def cycle_hero(self) -> None:
         # SQLite stays on the worker thread; the UI only asks for the change.

@@ -4,7 +4,7 @@ Every helper here is pure: rows in, numbers out.  The rules that make the
 picker trustworthy live here so they can be tested without the network:
 
 * a win rate is never reported from fewer than ``MIN_MATCHES`` games;
-* a small prior dampens extreme ranking estimates in smaller samples;
+* Wilson bounds quantify the uncertainty of measured rates;
 * net-worth buckets are merged around the player's real soul count so the
   number shown is the win rate of that item *at this stage of the match*.
 """
@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Sequence
 MIN_MATCHES = 100
 PRIOR_MATCHES = 20.0
 BUCKET_WIDTH = 5000
+COUNTER_BOUND_Z = 1.2815515655
 
 
 def observed_win_rate(row: dict, min_matches: int = MIN_MATCHES) -> Optional[float]:
@@ -36,6 +37,15 @@ def smoothed_win_rate(row: dict, prior: float = PRIOR_MATCHES,
     if observed_win_rate(row, min_matches) is None:
         return None
     return (int(row["wins"]) + prior / 2.0) / (int(row["matches"]) + prior)
+
+
+def wilson_bounds(rate: float, matches: int, z: float = COUNTER_BOUND_Z) -> tuple[float, float]:
+    """Wilson score bounds on an observed binomial rate."""
+    adjustment = z * z / matches
+    center = rate + adjustment / 2
+    radius = z * math.sqrt((rate * (1 - rate) + adjustment / 4) / matches)
+    scale = 1 + adjustment
+    return max(0.0, (center - radius) / scale), min(1.0, (center + radius) / scale)
 
 
 def rank_items(rows: Sequence[dict], limit: int) -> List[tuple]:
@@ -63,6 +73,12 @@ def bucket_floor(souls: Optional[int], width: int = BUCKET_WIDTH) -> Optional[in
     return (value // width) * width
 
 
+def bucket_window(floor: int, width: int = BUCKET_WIDTH, neighbours: int = 1) -> tuple[int, int]:
+    """Select the closest contiguous buckets, including at the zero boundary."""
+    low = max(0, floor - width * neighbours)
+    return low, low + 2 * width * neighbours
+
+
 def merge_buckets(
     rows: Sequence[dict],
     souls: Optional[int],
@@ -74,13 +90,12 @@ def merge_buckets(
     deadlock-api returns one row per item and net-worth bucket when
     ``bucket=net_worth_by_5000`` is requested.  A single bucket is noisy at low
     soul counts, so the three nearest buckets are summed.  Items whose pooled
-    sample is still thin are dropped by :func:`smoothed_win_rate` later.
+    sample is still thin use the advisor's overall fallback.
     """
     floor = bucket_floor(souls, width)
     if floor is None:
         return list(rows or ())
-    low = floor - width * max(0, int(neighbours))
-    high = floor + width * max(0, int(neighbours))
+    low, high = bucket_window(floor, width, max(0, int(neighbours)))
     pooled: Dict[int, dict] = {}
     for row in rows or ():
         if not isinstance(row, dict):

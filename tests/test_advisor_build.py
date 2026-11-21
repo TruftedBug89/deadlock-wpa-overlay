@@ -55,16 +55,17 @@ def test_threat_summary_never_invents_an_unknown_leader():
     assert threat_summary(context, names.get) == "Seven leads souls: 23,456 / Haze leads damage: 9,876"
 
 
-def live_source(tmp_path):
+def live_source(tmp_path, flex=3):
     assets = {"items": [
         dict(id=i, name=f"Item {i}", type="upgrade", item_slot_type=category,
-             cost=500, shopable=True, component_items=[])
+             cost=500, shopable=True, component_items=[], is_active_item=False)
         for category, ids in (("weapon", range(1, 6)), ("spirit", range(6, 11)),
                               ("vitality", range(11, 16))) for i in ids],
         "heroes": [dict(id=1, name="Our Hero"), dict(id=2, name="Threat")]}
     players = [LivePlayer(1001, 2, 1, 10000, gold=500, owned_item_ids=[]),
                LivePlayer(1002, 3, 2, 22000, hero_damage=9000, gold=1000, owned_item_ids=[])]
-    snapshot = LiveSnapshot(9001, players, fetched_at=time.time())
+    snapshot = LiveSnapshot(9001, players, fetched_at=time.time(),
+                            team_flex_slots={2: flex} if flex is not None else {})
     source = AdvisorDataSource(account_id=1001, match_id=9001, require_match=True,
                                assets_fetcher=lambda: assets,
                                stats_fetcher=lambda *_: [dict(item_id=i, wins=550, matches=1000)
@@ -79,6 +80,7 @@ def test_full_plan_source_has_legal_slots_fresh_save_labels_and_explanation(tmp_
     state = source.get_game_state(max_items=5)
     assert len(state.recommended_items) == 5
     assert len(state.build_plan) == 12
+    assert state.inventory_capacity == 12
     assert state.build_plan[:5] == state.recommended_items
     assert max(Counter(item.category for item in state.build_plan).values()) == 4
     assert {item.item_id for item in state.build_plan} == {
@@ -108,3 +110,25 @@ def test_identity_failure_is_reported_before_catalog_requests(tmp_path):
     assert state.scan_status == "connecting"
     assert "broadcast" in state.last_error
     assert not state.build_plan
+
+
+def test_sale_replaces_one_item_only_at_confirmed_capacity(tmp_path):
+    source, snapshot = live_source(tmp_path, flex=0)
+    snapshot.players[0].owned_item_ids = [1, 2, 3, 6, 7, 8, 11, 12, 13]
+    source._stats_fetcher = lambda _hero, _ids, _bucket: [
+        dict(item_id=i, wins=700 if i == 4 else 390 if i == 1 else 500,
+             matches=1000, bucket=10000 if _bucket else None)
+        for i in range(1, 16)
+    ]
+    full = source.get_game_state()
+    assert full.inventory_capacity == 9 and full.next_buy is None and not full.recommended_items
+    assert full.replacement.sell_id == 1 and full.replacement.buy.item_id == 4
+    assert source.last_explanation["inventory_replacement"]["slot_limit"] == 9
+    snapshot.team_flex_slots[2] = 1
+    opened = source.get_game_state()
+    assert opened.inventory_capacity == 10 and opened.replacement is None
+    assert opened.next_buy.item_id == 4
+    snapshot.team_flex_slots.clear()
+    uncertain = source.get_game_state()
+    assert uncertain.inventory_capacity is None and uncertain.replacement is None
+    assert uncertain.next_buy is None

@@ -3,6 +3,15 @@
 import local_account
 
 
+def test_steam64_account_keeps_exact_digits_through_config():
+    from config import _from_dict, _to_dict
+    steam_id = local_account.STEAM64_BASE + 1001
+    for value in (steam_id, str(steam_id), 1001):
+        assert _to_dict(_from_dict({"account_id": value}))["account_id"] == 1001
+    assert local_account.normalize_account_id("²") is None
+    assert local_account.normalize_account_id("18446744073709551616") is None
+
+
 def configure(monkeypatch, tmp_path):
     clock = [0.0]
     monkeypatch.setattr(local_account, "_CACHE", {"id": None, "at": None})

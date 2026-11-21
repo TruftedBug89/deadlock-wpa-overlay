@@ -77,16 +77,17 @@ def _strip(frame: np.ndarray) -> Image.Image:
 
 def parse_match_code(frame: np.ndarray) -> Optional[int]:
     """OCR the corner strip; return the numeric match id or None."""
-    strip = ImageOps.autocontrast(ImageOps.grayscale(_strip(frame)))
+    strip = ImageOps.autocontrast(ImageOps.grayscale(_strip(frame)), cutoff=1)
     votes: List[str] = []
     engine = _get_ocr_engine()
     if engine is None:
         return None
     for scale in (4, 5, 6):
         big = strip.resize((strip.width * scale, strip.height * scale), Image.LANCZOS)
-        for threshold in (140, 160, 180):
-            binary = big.point(lambda value, limit=threshold: 255 if value > limit else 0)
-            result = run_ocr(binary, engine)
+        # Grayscale and inverted glyphs preserve thin portions lost in thresholding.
+        variants = (big, ImageOps.invert(big), big.point(lambda value: 255 if value > 160 else 0))
+        for variant in variants:
+            result = run_ocr(variant, engine)
             if result is None:
                 continue
             text = " ".join(line.text for line in result.lines if line.text)

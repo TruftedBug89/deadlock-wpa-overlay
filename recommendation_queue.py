@@ -23,13 +23,15 @@ class RecommendationQueue:
         self.state = RecommendationQueueState()
         self.explanation = {"action": "cleared"}
 
-    def update(self, pool, *, owner, limit, interval=150, owned_ids=(), categories=None):
+    def update(self, pool, *, owner, limit, interval=150, owned_ids=(), categories=None,
+               inventory_capacity=None):
         """Refresh valid entries in place; append at most one new entry per review."""
         now = self.clock()
         interval = max(60.0, min(600.0, float(interval)))
         limit = max(1, int(limit))
         by_id = {entry.item_id: entry for entry in pool}
-        choose = lambda entries: select_legal(entries, limit, owned_ids, categories)
+        choose = lambda entries: select_legal(entries, limit, owned_ids, categories,
+                                              inventory_capacity=inventory_capacity)
         previous = list(self.state.item_ids)
         if self.state.owner != owner:
             selected, action = choose(pool), "new_match"

@@ -3,6 +3,7 @@
 import tkinter as tk
 
 from config import save_config
+from local_account import normalize_account_id
 from ui import theme
 from win32_overlay import get_monitor_layouts, monitor_for_rect
 
@@ -40,9 +41,7 @@ class SettingsPanel:
 
     def _build(self):
         self.content = self.body
-        self._text(self.body, "YOUR OVERLAY", muted=True, size=8)
-        self._text(self.body, "Make it yours.", size=16)
-        self._text(self.body, "Changes save as you go.", muted=True)
+        self._text(self.body, "Overlay settings", size=16)
         tabs = tk.Frame(self.body, bg=theme.BG)
         tabs.pack(fill="x", pady=(14, 4))
         self.tab_buttons = {}
@@ -125,7 +124,7 @@ class SettingsPanel:
         self.connection_fields = {}
         row = tk.Frame(self.body, bg=theme.BG)
         row.pack(fill="x")
-        for field, label in (("account_id", "Account ID"), ("match_id", "Match ID / blank for auto")):
+        for field, label in (("account_id", "Account ID or SteamID64"), ("match_id", "Match ID / blank for auto")):
             column = tk.Frame(row, bg=theme.BG)
             column.pack(side="left", padx=(0, 8))
             self._text(column, label, muted=True, size=8)
@@ -134,7 +133,6 @@ class SettingsPanel:
             entry.insert(0, str(getattr(self.overlay.config, field) or ""))
             entry.pack(ipady=5)
             self.connection_fields[field] = entry
-        self._text(self.body, "Your account must appear in the API roster before advice is shown.", muted=True, size=8)
         self.connection_status = self._text(self.body, "", muted=True, size=8)
         self.update_connection_status(self.overlay._current_state)
         tk.Button(self.body, text="Connect / retry", command=self.connect,
@@ -155,20 +153,18 @@ class SettingsPanel:
         values = {}
         for field, entry in self.connection_fields.items():
             text = entry.get().strip()
-            if text and (not text.isdigit() or int(text) <= 0):
+            if text and (not text.isascii() or not text.isdecimal() or len(text) > 20 or int(text) <= 0):
                 self.connection_status.config(text="Use a numeric ID, or leave match ID blank.")
                 return
-            values[field] = int(text) if text else None
+            number = int(text) if text else None
+            values[field] = normalize_account_id(number) if field == "account_id" else number
+            if text and (values[field] is None or values[field] >= 2**64):
+                self.connection_status.config(text="Check the account or match ID and try again.")
+                return
         for field, value in values.items():
             setattr(self.overlay.config, field, value)
-            setattr(self.overlay.data_source, field, value)
-        reset = getattr(self.overlay.data_source, "reset_connection", None)
-        if reset is not None:
-            reset()
         save_config(self.overlay.config)
-        from models import GameState
-        self.overlay._apply_new_state(GameState(source="advisor", scan_status="connecting"))
-        self.overlay._wake_event.set()
+        self.overlay.request_connection()
         self.connection_status.config(text="Checking connection in the background...")
 
     def _choices(self, field, options):
@@ -205,7 +201,9 @@ class SettingsPanel:
             return
         setattr(overlay.config, field, value)
         if field == "read_match_id":
-            overlay.data_source.read_match_id = value
+            save_config(overlay.config)
+            overlay.request_connection()
+            return
         if field == "opacity":
             overlay.config.hud_alpha = value
             overlay.root.attributes("-alpha", value)

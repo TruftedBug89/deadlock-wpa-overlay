@@ -1,6 +1,7 @@
 """Five-term ranking over measured evidence and explicit context heuristics.
 
-Edge uses a smoothed estimate against the same purchase pool's baseline.
+Edge uses the difference from the same purchase pool's baseline, discounted
+by sample size after capping extreme edges.
 Popularity uses purchase share, not the API's distinct buyer count. Counter
 bonuses require comparable pools, adequate samples and an enemy-pool edge.
 Tempo and the bounded 0.3 stance/carry nudge are policy, not measured uplift.
@@ -9,7 +10,7 @@ The card win rate is raw wins / matches; every score term stays in --explain.
 
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from item_stats import MIN_MATCHES, pick_rate, smoothed_win_rate, weighted_mean_win_rate, observed_win_rate
+from item_stats import MIN_MATCHES, observed_win_rate, pick_rate, weighted_mean_win_rate
 from models import Candidate, Scored
 
 SLOTS_PER_CATEGORY = 4
@@ -19,7 +20,8 @@ MAX_COUNTER_POINTS = 3.0
 EDGE_WEIGHT = 1.0
 POPULARITY_WEIGHT = 0.5
 COUNTER_WEIGHT = 0.8
-TEMPO_WEIGHT = 6.5
+TEMPO_WEIGHT = 1.5
+EDGE_PRIOR_MATCHES = 400
 STANCE_BONUS = 0.3
 SAVING_PENALTY = 0.6
 UPGRADE_BONUS = 0.3
@@ -74,7 +76,6 @@ def build_candidate(
         pick_rate=pick_rate(dict(row)),
         counter_gain=gain,
         counter_enemy=counter_enemy,
-        ranking_rate=smoothed_win_rate(dict(row)),
     )
 
 
@@ -104,11 +105,23 @@ def confidence_for(matches: int) -> str:
     return "low"
 
 
-def _tempo_points(cost: Optional[int], target: int) -> float:
+def _tempo_points(cost: Optional[int], target: int, bank: Optional[int]) -> float:
     if not cost or not target:
         return 0.0
+    if bank is not None and 0 < cost <= bank:
+        target = min(target, bank)
     distance = abs(int(cost) - int(target)) / float(max(target, 1))
     return -min(1.0, distance) * TEMPO_WEIGHT
+
+
+def edge_reliability(matches: int) -> float:
+    return matches / (matches + EDGE_PRIOR_MATCHES)
+
+
+def supported_counter_gain(candidate: Candidate) -> float:
+    if candidate.counter_gain + 1e-12 < COUNTER_MIN_GAIN:
+        return 0.0
+    return candidate.evidence.get("supported_gain", candidate.counter_gain)
 
 
 def _stance_points(category: str, stance: str) -> float:
@@ -131,11 +144,13 @@ def score_candidate(
 ) -> Scored:
     """Score one candidate against the hero baseline and the live context."""
     baseline = candidate.evidence.get("general_pool_baseline", baseline)
-    win_rate = candidate.ranking_rate if candidate.ranking_rate is not None else candidate.win_rate
-    edge = max(-MAX_EDGE_POINTS, min(MAX_EDGE_POINTS, (win_rate - baseline) * 100.0)) * EDGE_WEIGHT
+    raw_edge = (candidate.win_rate - baseline) * 100.0
+    edge = max(-MAX_EDGE_POINTS, min(MAX_EDGE_POINTS, raw_edge))
+    edge *= edge_reliability(candidate.matches) * EDGE_WEIGHT
     popularity = min(1.0, candidate.pick_rate * 2.0) * POPULARITY_WEIGHT
-    counter = min(MAX_COUNTER_POINTS, candidate.counter_gain * 100.0) * COUNTER_WEIGHT
-    tempo = _tempo_points(candidate.cost, target_cost)
+    matchup_gain = supported_counter_gain(candidate) if candidate.evidence.get("counter_applied_to_rank", True) else 0.0
+    counter = min(MAX_COUNTER_POINTS, matchup_gain * 100.0) * COUNTER_WEIGHT
+    tempo = _tempo_points(candidate.cost, target_cost, bank)
     if candidate.replaces_ids:
         tempo += UPGRADE_BONUS
     stance_points = _stance_points(candidate.category, stance)
@@ -161,20 +176,22 @@ def score_candidate(
         tags.append(f"SAVE {_format_souls(saving)}")
     elif affordable_now is None:
         tags.append("BUDGET UNKNOWN")
-    elif candidate.counter_gain >= COUNTER_MIN_GAIN and candidate.counter_enemy:
+    elif matchup_gain > 0 and candidate.counter_enemy:
         tags.append(f"VS {candidate.counter_enemy.upper()[:10]}")
     elif damage_share is not None and damage_share >= 1 / 3 and candidate.category == "vitality":
         tags.append("PROTECT CARRY")
-    elif stance == "ahead":
-        tags.append("AHEAD")
-    elif stance == "behind":
-        tags.append("BEHIND")
-    elif candidate.pick_rate >= CORE_PICK_RATE:
-        tags.append("POPULAR")
     elif candidate.replaces_ids:
         tags.append("UPGRADE")
+    elif candidate.pick_rate >= CORE_PICK_RATE:
+        tags.append("POPULAR")
+    elif candidate.win_rate > baseline:
+        tags.append("ABOVE POOL")
+    elif stance_points > 0 and stance == "ahead":
+        tags.append("AHEAD")
+    elif stance_points > 0 and stance == "behind":
+        tags.append("BEHIND")
     else:
-        tags.append("MEASURED EDGE")
+        tags.append("STAGE PICK")
     return Scored(
         candidate=candidate,
         score=score,
@@ -213,6 +230,7 @@ def rank(
     owned_categories: Optional[Mapping[int, str]] = None,
     damage_share: Optional[float] = None,
     reserve_slots: bool = True,
+    inventory_capacity: Optional[int] = None,
 ) -> List[Scored]:
     """Rank buyable, unowned, slot-legal items for the current game."""
     owned = {int(item_id) for item_id in owned_ids or ()}
@@ -232,8 +250,10 @@ def rank(
         return []
     scored: List[Scored] = []
     for candidate in pool:
-        freed = sum(1 for i in candidate.replaces_ids if i in owned
-                    and (owned_categories or {}).get(i) == candidate.category)
+        released = owned.intersection(candidate.replaces_ids)
+        if inventory_capacity is not None and len(owned) - len(released) >= inventory_capacity:
+            continue
+        freed = sum(1 for i in released if (owned_categories or {}).get(i) == candidate.category)
         filled = counts.get(candidate.category, 0) - freed
         if filled >= SLOTS_PER_CATEGORY:
             continue
@@ -259,22 +279,34 @@ def rank(
     )
     if not reserve_slots:
         return scored
-    return select_legal(scored, limit, owned, owned_categories or {})
+    return select_legal(scored, limit, owned, owned_categories, inventory_capacity=inventory_capacity)
 
 
-def select_legal(scored, limit, owned_ids=(), owned_categories=None):
+def select_legal(scored, limit, owned_ids=(), owned_categories=None, *, inventory_capacity=None):
     """Keep an ordered subset that can share the remaining category slots."""
     owned = set(owned_ids)
     counts = _category_counts(owned, owned_categories or {})
     selected = []
     replaced = set()
+    selected_ids, selected_ingredients = set(), set()
     for entry in scored:
-        released = {i for i in entry.candidate.replaces_ids if i in owned and i not in replaced
-                    and (owned_categories or {}).get(i) == entry.category}
-        if counts.get(entry.category, 0) - len(released) >= SLOTS_PER_CATEGORY:
+        if replaced.intersection(entry.candidate.replaces_ids):
+            continue
+        released = owned.intersection(entry.candidate.replaces_ids)
+        if inventory_capacity is not None and len(owned) + len(selected) - len(replaced) - len(released) >= inventory_capacity:
+            continue
+        ingredients = set(entry.candidate.evidence.get("catalog_ancestors", ()))
+        if entry.item_id in selected_ingredients or ingredients.intersection(selected_ids):
+            continue
+        freed = _category_counts(released, owned_categories or {})
+        if counts.get(entry.category, 0) - freed.get(entry.category, 0) >= SLOTS_PER_CATEGORY:
             continue
         selected.append(entry)
-        counts[entry.category] = counts.get(entry.category, 0) - len(released) + 1
+        selected_ids.add(entry.item_id)
+        selected_ingredients.update(ingredients)
+        for category, count in freed.items():
+            counts[category] -= count
+        counts[entry.category] = counts.get(entry.category, 0) + 1
         replaced.update(released)
         if len(selected) >= max(1, int(limit)):
             break
@@ -314,5 +346,5 @@ def rank_counters(
         for candidate in candidates or ()
         if candidate.counter_gain >= min_gain and candidate.item_id not in excluded
     ]
-    usable.sort(key=lambda entry: (entry.counter_gain, entry.matches), reverse=True)
+    usable.sort(key=lambda entry: (supported_counter_gain(entry), entry.matches), reverse=True)
     return usable[: max(1, int(limit))]

@@ -14,6 +14,11 @@ def visible_counters(state: GameState, config) -> List[CounterItem]:
     return list(state.counter_items)[:limit]
 
 
+def counter_gain_text(counter: CounterItem) -> str:
+    gain = counter.gain_text
+    return f"{gain} / Overall" if gain and counter.evidence.get("basis") == "overall" else gain
+
+
 def subtitle(state: GameState) -> str:
     """``VS HAZE 47% / NEXT: BURST 3200``: threat plus the next purchase."""
     if state.source == "advisor":

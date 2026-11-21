@@ -1,231 +1,149 @@
-"""Item icon resolution with a disk cache and a clear placeholder.
+"""Read official shop artwork from the disk cache on Tk's thread.
 
-Network access is deliberately confined to :func:`prewarm_icon`, which the
-background polling thread calls.  Tkinter's thread only ever reads local files,
-so a missing icon can never freeze the overlay or the game.
+Only the background poll worker downloads artwork, and the cache uses the
+same URL the catalog supplied. An unavailable image leaves the item text.
 """
 
-import os
+import hashlib
 import io
-import re
-import sys
+import os
+import time
 import tkinter as tk
 import urllib.request
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Optional
+from urllib.parse import urlsplit
 
-if TYPE_CHECKING:  # Pillow loads on first icon use, not on overlay startup
-    from PIL import Image, ImageDraw, ImageFont, ImageTk
+from advisor_api import CACHE_TTL_ASSETS
 
-if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-    BUNDLED_ICONS_DIR = Path(sys._MEIPASS) / "assets" / "icons"
-else:
-    BUNDLED_ICONS_DIR = Path(__file__).resolve().parent / "assets" / "icons"
+if TYPE_CHECKING:
+    from PIL import ImageTk
 
 LOCAL_CACHE_DIR = (
-    Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))) / "DeadlockWPAOverlay" / "icons"
+    Path(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"))
+    / "DeadlockWPAOverlay" / "shop_art"
 )
-try:
-    LOCAL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-except Exception:
-    pass
-
-_PHOTO_CACHE: Dict[Tuple[str, int, str], "ImageTk.PhotoImage"] = {}
-_PREWARMED: set = set()
+_SHOP_ASSET_HOST = "assets-bucket.deadlock-api.com"
+_SHOP_ASSET_PREFIX = "/assets-api-res/images/"
+_MAX_IMAGE_BYTES = 512_000
+_MAX_IMAGE_DIMENSION = 1024
+_PHOTO_CACHE: dict[tuple[Path, int, int], "ImageTk.PhotoImage"] = {}
+_INVALID_ART: dict[Path, int] = {}
+_RETRY_AT: dict[str, float] = {}
 
 
 def clear_photo_cache() -> None:
-    """Drop cached Tk photo images (call when the Tk root is destroyed)."""
+    """Drop cached Tk photos when the interpreter is destroyed."""
     _PHOTO_CACHE.clear()
 
 
-def normalize_item_name(name: str) -> str:
-    """Filesystem-safe key, e.g. ``Diviner's Kevlar`` -> ``diviners_kevlar``."""
-    clean = (name or "").lower().replace("'", "").strip()
-    return re.sub(r"[^a-z0-9]+", "_", clean).strip("_")
+def _cache_path(url: Optional[str]) -> Optional[Path]:
+    if not isinstance(url, str) or not url:
+        return None
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    if (parsed.scheme != "https" or parsed.netloc != _SHOP_ASSET_HOST
+            or not parsed.path.startswith(_SHOP_ASSET_PREFIX)
+            or not parsed.path.endswith(".png") or parsed.fragment):
+        return None
+    return LOCAL_CACHE_DIR / f"{hashlib.sha256(url.encode('utf-8')).hexdigest()}.png"
 
 
-def _search_dirs() -> List[Path]:
-    dirs: List[Path] = []
-    if BUNDLED_ICONS_DIR.exists():
-        dirs.append(BUNDLED_ICONS_DIR)
-    if LOCAL_CACHE_DIR.exists():
-        dirs.append(LOCAL_CACHE_DIR)
-    if getattr(sys, "frozen", False):
-        exe_assets = Path(sys.executable).parent / "assets" / "icons"
-        if exe_assets.exists():
-            dirs.append(exe_assets)
-    return dirs
+def _cached_file(path: Path) -> Optional[int]:
+    """Return the current file generation or None for unusable art."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    if (not 0 < stat.st_size <= _MAX_IMAGE_BYTES
+            or time.time() - stat.st_mtime >= CACHE_TTL_ASSETS
+            or _INVALID_ART.get(path) == stat.st_mtime_ns):
+        return None
+    return stat.st_mtime_ns
 
 
-def _candidate_filenames(name: str, class_name: Optional[str], image_url: Optional[str]) -> List[str]:
-    key = normalize_item_name(name)
-    spaced = (name or "").lower().replace(" ", "_")
-    candidates = [
-        f"{key}.png",
-        f"{spaced}.png",
-        f"{spaced.replace(chr(39), '_')}.png",
-        f"{spaced.replace(chr(39), '')}.png",
-    ]
-    if class_name:
-        clean_class = class_name.lower().strip()
-        candidates.append(f"{clean_class}.png")
-        if clean_class.startswith("upgrade_"):
-            candidates.append(f"{clean_class[8:]}.png")
-    if image_url:
-        file_name = Path(image_url).name
-        if file_name:
-            candidates.append(file_name)
-    return candidates
+def _valid_image(image) -> bool:
+    return image.format == "PNG" and max(image.size) <= _MAX_IMAGE_DIMENSION
 
 
-def find_local_icon(
-    name: str,
-    class_name: Optional[str] = None,
-    image_url: Optional[str] = None,
-) -> Optional[Path]:
-    """Locate an icon PNG on disk for an item."""
-    candidates = _candidate_filenames(name, class_name, image_url)
-    for directory in _search_dirs():
-        for filename in candidates:
-            path = directory / filename
-            try:
-                if path.exists() and path.stat().st_size > 0:
-                    return path
-            except OSError:
-                continue
-    return None
-
-
-def download_icon(url: str, target_path: Path, timeout: float = 3.0) -> bool:
-    """Download an icon, validate it, and store it atomically."""
+def _download_icon(url: str, target: Path) -> bool:
     try:
         request = urllib.request.Request(url, headers={"User-Agent": "DeadlockOverlay/2.0"})
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = response.read(512_000)
-        if not data:
+        with urllib.request.urlopen(request, timeout=3.0) as response:
+            if _cache_path(response.geturl()) != target:
+                return False
+            data = response.read(_MAX_IMAGE_BYTES + 1)
+        if not 0 < len(data) <= _MAX_IMAGE_BYTES:
             return False
         from PIL import Image
 
-        probe = Image.open(io.BytesIO(data))
-        probe.verify()
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        temp = target_path.with_suffix(".part")
-        temp.write_bytes(data)
-        os.replace(temp, target_path)
+        with Image.open(io.BytesIO(data)) as probe:
+            if not _valid_image(probe):
+                return False
+            probe.verify()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temp = target.with_suffix(".part")
+        try:
+            temp.write_bytes(data)
+            os.replace(temp, target)
+        finally:
+            temp.unlink(missing_ok=True)
         return True
     except Exception:
+        # Failed art must never replace current advice with a poll error.
         return False
 
 
-def prewarm_icon(
-    name: str,
-    image_url: Optional[str] = None,
-    class_name: Optional[str] = None,
-) -> bool:
-    """Ensure an icon exists on disk (worker thread only)."""
-    key = normalize_item_name(name)
-    if key in _PREWARMED:
-        return True
-    if find_local_icon(name, class_name=class_name, image_url=image_url):
-        _PREWARMED.add(key)
-        return True
-    if not image_url:
+def can_prewarm(image_url: Optional[str]) -> bool:
+    """Skip cached art and retry failed requests at most every five minutes."""
+    path = _cache_path(image_url)
+    return (path is not None and _cached_file(path) is None
+            and time.monotonic() >= _RETRY_AT.get(image_url, 0))
+
+
+def prewarm_icon(image_url: Optional[str]) -> bool:
+    """Fetch one missing catalog image, returning True when newly cached."""
+    if not can_prewarm(image_url):
         return False
-    target = LOCAL_CACHE_DIR / f"{key}.png"
-    if download_icon(image_url, target):
-        _PREWARMED.add(key)
+    path = _cache_path(image_url)
+    if _download_icon(image_url, path):
+        _INVALID_ART.pop(path, None)
+        _RETRY_AT.pop(image_url, None)
         return True
+    _RETRY_AT[image_url] = time.monotonic() + 300
     return False
 
 
-def _category_color(category: str) -> Tuple[int, int, int]:
-    if category == "vitality":
-        return (116, 168, 50)
-    if category == "spirit":
-        return (159, 98, 222)
-    return (222, 139, 0)
-
-
-def _generate_fallback_icon(name: str, size: int = 32, category: str = "weapon") -> "Image.Image":
-    """Draw an obviously synthetic placeholder (dashed border + initials)."""
-    from PIL import Image, ImageDraw, ImageFont
-
-    image = Image.new("RGBA", (size, size), (12, 14, 17, 255))
-    draw = ImageDraw.Draw(image)
-    colour = _category_color(category)
-
-    # Dashed 1 px border signals "icon missing" instead of faking artwork.
-    dash, gap = 3, 3
-    for x in range(1, size - 1, dash + gap):
-        draw.line([(x, 1), (min(x + dash, size - 2), 1)], fill=colour + (200,))
-        draw.line([(x, size - 2), (min(x + dash, size - 2), size - 2)], fill=colour + (120,))
-    for y in range(1, size - 1, dash + gap):
-        draw.line([(1, y), (1, min(y + dash, size - 2))], fill=colour + (200,))
-        draw.line([(size - 2, y), (size - 2, min(y + dash, size - 2))], fill=colour + (120,))
-
-    words = [word for word in re.split(r"[\s\-_]+", name or "") if word]
-    initials = "".join(word[0].upper() for word in words[:2]) or "?"
-    try:
-        font = ImageFont.truetype("segoeuib.ttf", max(9, size // 3))
-    except Exception:
-        font = ImageFont.load_default()
-
-    bbox = draw.textbbox((0, 0), initials, font=font)
-    text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    draw.text(
-        ((size - text_w) / 2, (size - text_h) / 2 - bbox[1]),
-        initials,
-        fill=(148, 163, 184, 255),
-        font=font,
-    )
-    return image
-
-
-def get_item_photo(
-    name: str,
-    image_url: Optional[str] = None,
-    size: int = 32,
-    class_name: Optional[str] = None,
-    category: str = "weapon",
-    allow_download: bool = False,
-) -> "Optional[ImageTk.PhotoImage]":
-    """Return a Tk photo image for an item (placeholder when missing)."""
-    from PIL import Image, ImageTk
-
-    cache_key = (name.lower(), int(size), category)
+def get_item_photo(image_url: Optional[str], size: int) -> "Optional[ImageTk.PhotoImage]":
+    """Return the catalog shop image without stretching it or doing network I/O."""
+    path = _cache_path(image_url)
+    stamp = _cached_file(path) if path is not None else None
+    if stamp is None:
+        return None
+    cache_key = (path, stamp, size)
     cached = _PHOTO_CACHE.get(cache_key)
     if cached is not None:
-        try:
-            # A PhotoImage is bound to the Tk interpreter that created it.  If
-            # the overlay window was recreated, the cached image is dead and
-            # using it raises `image "pyimageN" doesn't exist`.
-            if getattr(cached, "tk", None) is not getattr(tk._default_root, "tk", None):
-                raise RuntimeError("stale Tk interpreter")
-            cached.width()
+        if getattr(cached, "tk", None) is getattr(tk._default_root, "tk", None):
             return cached
-        except Exception:
-            _PHOTO_CACHE.pop(cache_key, None)
+        _PHOTO_CACHE.pop(cache_key, None)
 
-    local_path = find_local_icon(name, class_name=class_name, image_url=image_url)
-    if local_path is None and allow_download and image_url:
-        target = LOCAL_CACHE_DIR / f"{normalize_item_name(name)}.png"
-        if download_icon(image_url, target):
-            local_path = target
-
-    if local_path is not None:
-        try:
-            image = Image.open(local_path).convert("RGBA")
-            if image.size != (size, size):
-                image = image.resize((size, size), Image.Resampling.LANCZOS)
-        except Exception:
-            image = _generate_fallback_icon(name, size, category)
-    else:
-        image = _generate_fallback_icon(name, size, category)
+    from PIL import Image, ImageOps, ImageTk
 
     try:
-        photo = ImageTk.PhotoImage(image)
-    except Exception:
+        with Image.open(path) as image:
+            if not _valid_image(image):
+                raise ValueError("Invalid shop image")
+            art = ImageOps.contain(image.convert("RGBA"), (size, size), Image.Resampling.LANCZOS)
+    except (OSError, SyntaxError, ValueError, Image.DecompressionBombError):
+        _INVALID_ART[path] = stamp
+        return None
+    try:
+        photo = ImageTk.PhotoImage(art)
+    except (RuntimeError, tk.TclError):
         return None
     _PHOTO_CACHE[cache_key] = photo
+    if len(_PHOTO_CACHE) > 160:
+        _PHOTO_CACHE.pop(next(iter(_PHOTO_CACHE)))
     return photo

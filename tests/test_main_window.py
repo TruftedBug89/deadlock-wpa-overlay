@@ -165,8 +165,10 @@ class TestOverlayWindow(unittest.TestCase):
             recommended_items=_items(2), source="advisor", scan_status="ok",
             valid_until=time.time() + 60))
         self.overlay._current_state.valid_until = time.time() - 1
-        self.overlay._drain_queue()
-        assert self.overlay._content_kind == "hidden"
+        with patch.object(self.overlay, "_is_ingame", return_value=True):
+            self.overlay._drain_queue()
+        assert self.overlay._content_kind == "status"
+        assert self.overlay._current_state.scan_status == "unknown"
         assert self.overlay._current_state.recommended_items == []
 
     def test_position_window_flush_right_zero_gap(self):

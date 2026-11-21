@@ -11,6 +11,7 @@ from typing import List, Sequence
 
 from icon_loader import get_item_photo
 from models import CounterItem
+from ui.counter_panel import counter_gain_text
 from ui.hud_geometry import CounterMetrics
 from ui import theme
 
@@ -106,25 +107,20 @@ class CounterView(tk.Frame):
 
     def _fill(self) -> None:
         for index, counter in enumerate(self.counters[: len(self._chips)]):
-            photo = get_item_photo(
-                counter.name,
-                image_url=counter.image_url,
-                size=self.metrics.icon,
-                class_name=counter.class_name,
-                category=counter.category,
-                allow_download=False,
-            )
+            photo = get_item_photo(counter.image_url, self.metrics.icon)
             if photo is not None:
                 self._photos.append(photo)
             try:
                 self._chips[index].config(bg=theme.BORDER)
                 icon = self._icon_labels[index]
                 if photo is not None:
-                    icon.config(image=photo, text="", bg=CHIP_BG)
+                    icon.config(image=photo, bg=CHIP_BG)
+                    icon.pack_configure(padx=(self.metrics.px(5), self.metrics.px(4)))
                 else:
-                    icon.config(image="", text="?", bg=CHIP_BG)
+                    icon.config(image="", bg=CHIP_BG)
+                    icon.pack_configure(padx=(self.metrics.px(4), 0))
                 self._name_labels[index].config(text=counter.display_name, bg=CHIP_BG)
-                self._sample_labels[index].config(text=counter.gain_text or counter.samples_text, bg=CHIP_BG)
+                self._sample_labels[index].config(text=counter_gain_text(counter) or counter.samples_text, bg=CHIP_BG)
             except tk.TclError:
                 continue
 

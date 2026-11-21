@@ -72,6 +72,14 @@ def test_relative_edge_beats_absolute_win_rate():
     assert scored.tags == ("POPULAR",)
 
 
+def test_large_reliable_edge_outranks_small_extreme_sample():
+    noisy = candidate(item_id=1, win_rate=.90, matches=150)
+    proven = candidate(item_id=2, win_rate=.55, matches=10000)
+    ranking = rank([noisy, proven], baseline=.50, bank=4000)
+    assert [entry.item_id for entry in ranking] == [2, 1]
+    assert ranking[1].win_rate == .90
+
+
 def test_score_prefers_the_popular_item_on_equal_win_rate():
     base = 0.5
     popular = score_candidate(candidate(item_id=1, pick_rate=0.6), base)
@@ -160,11 +168,25 @@ def test_merge_buckets_without_souls_returns_rows_untouched():
     assert merge_buckets(rows, 0) == rows
 
 
+def test_merge_early_souls_keeps_three_nonnegative_buckets():
+    rows = [dict(item_id=1, bucket=bucket, wins=55, matches=100)
+            for bucket in (0, 5000, 10000, 15000)]
+    assert merge_buckets(rows, 2500)[0]["matches"] == 300
+
+
 def test_stage_price_buries_a_starter_at_late_souls():
     starter = candidate(item_id=1, name="Starter", cost=500, win_rate=0.545)
     core = candidate(item_id=2, name="Core", cost=6400, win_rate=0.535)
     ranked = rank([starter, core], souls=22000, target_cost=6400)
     assert [entry.name for entry in ranked] == ["Core", "Starter"]
+
+
+def test_small_wallet_does_not_penalize_the_affordable_stage_pick():
+    item = candidate(cost=800, win_rate=.53)
+    smaller_wallet = score_candidate(item, .50, target_cost=6400, bank=800)
+    larger_wallet = score_candidate(item, .50, target_cost=6400, bank=6400)
+    assert smaller_wallet.breakdown["tempo"] == 0
+    assert larger_wallet.breakdown["tempo"] < 0
 
 
 def test_smoothed_win_rate_prior_is_stable():
